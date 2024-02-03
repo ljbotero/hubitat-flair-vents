@@ -131,7 +131,7 @@ def login() {
   def query = [
                     client_id    : settings?.clientId,
                     client_secret: settings?.clientSecret,
-                    scope        : 'vents.view vents.edit structures.view',
+                    scope        : 'vents.view vents.edit structures.view structures.edit',
                     grant_type   : 'client_credentials'
                 ]
   def params = [uri: uri, query: query]
@@ -268,6 +268,9 @@ def traitExtract(device, details, propNameData, propNameDriver = propNameData, u
 def processVentTraits(device, details) {
   logDebug("Processing Vent data for ${device}: ${details}")
 
+  if (!details.data) {
+    return;
+  }
   traitExtract(device, details, 'firmware-version-s')
   traitExtract(device, details, 'rssi')
   traitExtract(device, details, 'connected-gateway-puck-id')
@@ -286,6 +289,10 @@ def processVentTraits(device, details) {
 def processRoomTraits(device, details) {
   logDebug("Processing Room data for ${device}: ${details}")
 
+  if (!details.data) {
+    return;
+  }
+  sendEvent(device, [name: 'room-id', value: details.data.id])  
   traitExtract(device, details, 'name', 'room-name')
   traitExtract(device, details, 'current-temperature-c', 'room-current-temperature-c')
   traitExtract(device, details, 'room-conclusion-mode')
@@ -351,5 +358,46 @@ def handleVentPatch(resp, data) {
   } else {
     fullDevice = getChildDevice(data.device.getDeviceNetworkId())
     traitExtract(fullDevice, resp.getJson(), 'percent-open', '%')
+  }
+}
+
+
+def patchRoom(com.hubitat.app.DeviceWrapper device, active) {
+  def roomId = device.currentValue("room-id")
+  logDebug("Setting room attributes for ${roomId} to active:${active}%")
+  if (!roomId || active == null) {
+    return
+  }
+  
+  def uri = 'https://api.flair.co/api/rooms/' + roomId
+  def headers = [ Authorization: 'Bearer ' + state.flairAccessToken ]
+  def contentType = 'application/json'
+  def body = [
+    data: [
+      type: "rooms", 
+      attributes: [
+        "active": active == 'true' ? true: false
+      ]
+    ]
+  ]
+  def params = [
+    uri: uri, 
+    headers: headers, 
+    contentType: contentType, 
+    requestContentType: contentType,
+    body: groovy.json.JsonOutput.toJson(body)
+  ]
+  logDebug "sendAsynchttpPatch:${uri}, body:${params}"
+  asynchttpPatch(handleRoomPatch, params, [device: device])
+}
+
+def handleRoomPatch(resp, data) {
+  def respCode = resp.getStatus()
+  if (resp.hasError()) {
+    def respError = resp.getErrorData().replaceAll('[\n]', '').replaceAll('[ \t]+', ' ')
+    log.error("Device-get response code: ${respCode}, body: ${respError}")
+  } else {
+    fullDevice = getChildDevice(data.device.getDeviceNetworkId())
+    traitExtract(fullDevice, resp.getJson(), 'active', 'room-active')
   }
 }
