@@ -42,6 +42,7 @@ import groovy.json.JsonOutput
         attribute 'motor-run-time', 'number'
         attribute 'motor-current', 'number'
 
+        attribute 'room-id', 'string'
         attribute 'room-name', 'string'
         attribute 'room-current-temperature-c', 'number'
         attribute 'room-conclusion-mode', 'string'
@@ -69,6 +70,8 @@ import groovy.json.JsonOutput
         attribute 'room-active', 'string'
         attribute 'room-set-point-manual', 'string'
         attribute 'room-pucks-inactive', 'string'
+
+        command 'setRoomActive', [[name: 'roomActive',  type: 'ENUM', constraints: ['true', 'false']]]
     }
     
     preferences {
@@ -139,4 +142,10 @@ def getDeviceState(String attr) {
     } else {
         refresh()
     }
+}
+
+def setRoomActive(isActive) {
+    logDebug("setRoomActive: ${isActive}")
+    
+    parent.patchRoom(device, isActive)
 }
