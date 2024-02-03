@@ -39,7 +39,8 @@ You can control the vents by setting the **setLevel** attribute:
 - `setLevel 100` - Fully open vent
 
 The opening percentage will be reflected in the **level** attribute.
-
 This allows automating vent open/close based on routines, presence, or other triggers.
+
+You can control whether the room is active or not by setting **setRoomActive** attribute.
 
 ![Flair Vent Device](hubitat-flair-vents-device.png)
