@@ -38,8 +38,8 @@ preferences {
 def mainPage() {
   dynamicPage(name: 'mainPage', title: 'Setup', install: true, uninstall: true) {
         section {
-          input 'clientId', 'text', title: 'Client Id', required: true, submitOnChange: true
-          input 'clientSecret', 'text', title: 'Client Secret', required: true, submitOnChange: true
+          input 'clientId', 'text', title: 'Client Id (OAuth 2.0)', required: true, submitOnChange: true
+          input 'clientSecret', 'text', title: 'Client Secret OAuth 2.0', required: true, submitOnChange: true
           paragraph "<b><small>Obtain your client Id and secret from <a href='https://forms.gle/VohiQjWNv9CAP2ASA' target='_blank'>here<a/></b></small>"
         }
 
@@ -127,14 +127,9 @@ private logDebug(msg) {
 
 def login() {
   logDebug('Getting access_token from Flair')
-  def uri = 'https://api.flair.co/oauth/token'
-  def query = [
-                    client_id    : settings?.clientId,
-                    client_secret: settings?.clientSecret,
-                    scope        : 'vents.view vents.edit structures.view structures.edit',
-                    grant_type   : 'client_credentials'
-                ]
-  def params = [uri: uri, query: query]
+  def uri = 'https://api.flair.co/oauth2/token'
+  def body = "client_id=${settings?.clientId}&client_secret=${settings?.clientSecret}&scope=vents.view+vents.edit+structures.view+structures.edit&grant_type=client_credentials"
+  def params = [uri: uri, body: body]
   try {
       httpPost(params) { response -> handleLoginResponse(response) }
       state.authError = ''
@@ -380,6 +375,7 @@ def patchRoom(com.hubitat.app.DeviceWrapper device, active) {
       ]
     ]
   ]
+  
   def params = [
     uri: uri, 
     headers: headers, 
