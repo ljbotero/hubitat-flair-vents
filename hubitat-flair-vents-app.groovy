@@ -17,6 +17,16 @@
  *  version: 0.0.1
  */
 
+import hubitat.scheduling.AsyncResponse
+import groovy.transform.Field
+
+@Field static String BASE_URL = "https://api.flair.co"
+@Field static String CONTENT_TYPE = "application/json"
+@Field static String COOLING = "cooling"
+@Field static String HEATING = "heating"
+@Field static Double MINIMUM_PERCENTAGE_OPEN = 5
+@Field static Double MAXIMUM_PERCENTAGE_OPEN = 100
+
 definition(
         name: 'Flair Vents',
         namespace: 'bot.flair',
@@ -55,6 +65,20 @@ def mainPage() {
           }
           listDiscoveredDevices()
 
+          section("<h2>Dynamic Airflow Balancing (Beta)</h2>") {
+            input "dabEnabled", title: "Use Dynamic Airflow Balancing", submitOnChange: true, defaultValue: false, "bool"            
+            if (dabEnabled) {
+              input "thermostat1", title: "Choose Thermostat for Vents",  multiple: false, required: false, "capability.thermostat"
+              input name: "thermostat1TempUnit", type: "enum", title: "Units used by Thermostat", defaultValue: 2, options: [1:"Celsius (°C)",2:"Fahrenheit (°F)"]
+              patchStructureData(["mode": "manual"])
+            } else {
+              patchStructureData(["mode": "auto"])
+            }
+            if (thermostat1) {
+              unsubscribe(thermostat1,"thermostatOperatingState")
+              subscribe(thermostat1,"thermostatOperatingState", thermostat1ChangeStateHandler)
+            }
+          }          
         } else {
           section {
             paragraph 'Device discovery button is hidden until authorization is completed.'
@@ -107,6 +131,13 @@ def initialize(evt) {
   logDebug(evt)
 }
 
+// Helpers
+
+def hasRoomReachedSetpoint(hvacMode, setpoint, currentVentTemp) {
+  // With a 0.5 degrees of wiggle room
+  return (hvacMode == COOLING && setpoint - 0.5 >= currentVentTemp) || (hvacMode == HEATING && setpoint + 0.5 <= currentVentTemp)
+}
+
 void removeChildren() {
   def children = getChildDevices()
   logDebug("Deleting all child devices: ${children}")
@@ -123,16 +154,53 @@ private logDebug(msg) {
   }
 }
 
-// OAuth
+def isValidResponse(resp) {
+  def respCode = resp.getStatus()
+  if (resp.hasError()) {
+    def respError = resp.getErrorData().replaceAll('[\n]', '').replaceAll('[ \t]+', ' ')
+    log.error("Device-get response code: ${respCode}, body: ${respError}")
+    return false
+  } 
+  return true
+}
+
+def getDataAsync(uri, handler, data = null) {
+  def headers = [ Authorization: 'Bearer ' + state.flairAccessToken ]
+  def contentType = CONTENT_TYPE
+  def httpParams = [ uri: uri, headers: headers, contentType: contentType ]
+  asynchttpGet(handler, httpParams, data)
+}
+
+def patchDataAsync(uri, handler, body, data = null) {
+  def headers = [ Authorization: 'Bearer ' + state.flairAccessToken ]
+  def contentType = CONTENT_TYPE
+  def httpParams = [
+    uri: uri, 
+    headers: headers, 
+    contentType: contentType, 
+    requestContentType: contentType,
+    body: groovy.json.JsonOutput.toJson(body)
+  ]
+  asynchttpPatch(handler, httpParams, data)
+  logDebug "patchDataAsync:${uri}, body:${body}"
+}
 
 def login() {
-  logDebug('Getting access_token from Flair')
-  def uri = 'https://api.flair.co/oauth2/token'
+  autheticate()
+  getStructureData()
+}
+
+
+// OAuth
+
+def autheticate() {
+  //logDebug('Getting access_token from Flair')
+  def uri = BASE_URL + '/oauth2/token'
   def body = "client_id=${settings?.clientId}&client_secret=${settings?.clientSecret}&scope=vents.view+vents.edit+structures.view+structures.edit&grant_type=client_credentials"
   def params = [uri: uri, body: body]
   try {
-      httpPost(params) { response -> handleLoginResponse(response) }
-      state.authError = ''
+      httpPost(params) { response -> handleAuthResponse(response) }
+      state.remove('authError')
     } catch (groovyx.net.http.HttpResponseException e) {
       String err = "Login failed -- ${e.getLocalizedMessage()}: ${e.response.data}"
       log.error(err)
@@ -142,10 +210,9 @@ def login() {
   return ''
 }
 
-def handleLoginResponse(resp) {
-  //def respCode = resp.getStatus()
+def handleAuthResponse(resp) {
   def respJson = resp.getData()
-  logDebug("Authorized scopes: ${respJson.scope}")
+  //logDebug("Authorized scopes: ${respJson.scope}")
   state.flairAccessToken = respJson.access_token
 }
 
@@ -161,29 +228,21 @@ def appButtonHandler(btn) {
 
 private void discover() {
   logDebug('Discovery started')
-  def uri = 'https://api.flair.co/api/vents'
-  def headers = [ Authorization: 'Bearer ' + state.flairAccessToken ]
-  def contentType = 'application/json'
-  def params = [ uri: uri, headers: headers, contentType: contentType ]
-  asynchttpGet(handleDeviceList, params, [params: params])
+  def uri = BASE_URL + '/api/vents'
+  getDataAsync(uri, handleDeviceList)
 }
 
 def handleDeviceList(resp, data) {
-  def respCode = resp.getStatus()
-  if (resp.hasError()) {
-    def respError = resp.getErrorData()
-    log.warn("Device-list response code: ${respCode}, body: ${respError}")
-    } else {
-    def respJson = resp.getJson()
-    respJson.data.each {
-      def device = [:]
-      device.id = it.id
-      device.type = it.type
-      device.label = it.attributes.name
-      def dev = makeRealDevice(device)
-      if (dev != null) {
-        processVentTraits(dev, it)
-      }
+  if (!isValidResponse(resp)) return
+  def respJson = resp.getJson()
+  respJson.data.each {
+    def device = [:]
+    device.id = it.id
+    device.type = it.type
+    device.label = it.attributes.name
+    def dev = makeRealDevice(device)
+    if (dev != null) {
+      processVentTraits(dev, it)
     }
   }
 }
@@ -209,43 +268,28 @@ def makeRealDevice(device) {
 }
 
 def getDeviceData(com.hubitat.app.DeviceWrapper device) {
-  logDebug("Refresh device details for ${device}")
+  //logDebug("Refresh device details for ${device}")
   def deviceId = device.getDeviceNetworkId()
 
-  def uri = 'https://api.flair.co/api/vents/' + deviceId + '/current-reading'
-  def headers = [ Authorization: 'Bearer ' + state.flairAccessToken ]
-  def contentType = 'application/json'
-  def params = [ uri: uri, headers: headers, contentType: contentType ]
-  asynchttpGet(handleDeviceGet, params, [device: device, params: params])
+  def uri = BASE_URL + '/api/vents/' + deviceId + '/current-reading'
+  getDataAsync(uri, handleDeviceGet, [device: device])
 
-  uri = 'https://api.flair.co/api/vents/' + deviceId + '/room'
-  params = [ uri: uri, headers: headers, contentType: contentType ]
-  asynchttpGet(handleRoomGet, params, [device: device, params: params])
-  
+  uri = BASE_URL + '/api/vents/' + deviceId + '/room'
+  getDataAsync(uri, handleRoomGet, [device: device])
 }
 
 // Get device data
 
 def handleRoomGet(resp, data) {
-  def respCode = resp.getStatus()
-  if (resp.hasError()) {
-    def respError = resp.getErrorData().replaceAll('[\n]', '').replaceAll('[ \t]+', ' ')
-    log.error("Device-get response code: ${respCode}, body: ${respError}")
-  } else {
-    fullDevice = getChildDevice(data.device.getDeviceNetworkId())
-    processRoomTraits(fullDevice, resp.getJson())
-  }
+  if (!isValidResponse(resp)) return
+  fullDevice = getChildDevice(data.device.getDeviceNetworkId())
+  processRoomTraits(fullDevice, resp.getJson())
 }
 
 def handleDeviceGet(resp, data) {
-  def respCode = resp.getStatus()
-  if (resp.hasError()) {
-    def respError = resp.getErrorData().replaceAll('[\n]', '').replaceAll('[ \t]+', ' ')
-    log.error("Device-get response code: ${respCode}, body: ${respError}")
-  } else {
-    fullDevice = getChildDevice(data.device.getDeviceNetworkId())
-    processVentTraits(fullDevice, resp.getJson())
-  }
+  if (!isValidResponse(resp)) return
+  fullDevice = getChildDevice(data.device.getDeviceNetworkId())
+  processVentTraits(fullDevice, resp.getJson())
 }
 
 def traitExtract(device, details, propNameData, propNameDriver = propNameData, unit = null) {
@@ -261,7 +305,7 @@ def traitExtract(device, details, propNameData, propNameDriver = propNameData, u
 }
 
 def processVentTraits(device, details) {
-  logDebug("Processing Vent data for ${device}: ${details}")
+ // logDebug("Processing Vent data for ${device}: ${details}")
 
   if (!details.data) {
     return;
@@ -279,15 +323,21 @@ def processVentTraits(device, details) {
   traitExtract(device, details, 'has-buzzed')
   traitExtract(device, details, 'updated-at')
   traitExtract(device, details, 'inactive')
+
+    if (!details?.data?.relationships?.vents?.data) {
+    return;
+  }
+
 }
 
 def processRoomTraits(device, details) {
-  logDebug("Processing Room data for ${device}: ${details}")
+  // logDebug("Processing Room data for ${device}: ${details}")
 
-  if (!details.data) {
+  if (!details?.data) {
     return;
   }
-  sendEvent(device, [name: 'room-id', value: details.data.id])  
+  def roomId = details.data.id
+  sendEvent(device, [name: 'room-id', value: roomId])  
   traitExtract(device, details, 'name', 'room-name')
   traitExtract(device, details, 'current-temperature-c', 'room-current-temperature-c')
   traitExtract(device, details, 'room-conclusion-mode')
@@ -315,17 +365,76 @@ def processRoomTraits(device, details) {
   traitExtract(device, details, 'active', 'room-active')
   traitExtract(device, details, 'set-point-manual', 'room-set-point-manual')
   traitExtract(device, details, 'pucks-inactive', 'room-pucks-inactive')
+
+  if (details?.data?.relationships?.structure?.data) {
+    def structureId = details.data.relationships.structure.data.id
+    sendEvent(device, [name: 'structure-id', value: structureId])
+  }
+
+  updateByRoomIdState(details)
+}
+
+def updateByRoomIdState(details) {  
+  if (!details?.data?.relationships?.vents?.data) {
+    return;
+  }
+  def roomId = details.data.id
+  def ventIds = []
+  details.data.relationships.vents.data.each {
+    ventIds.add(it.id)
+  }
+  def roomVents = [roomName: details.data.attributes.name, ventIds: ventIds, heatingRate: 0, coolingRate: 0, lastStartTemp: 0]
+  if (state?.roomState == null) {
+     state.roomState = ["${roomId}": roomVents]
+  } else if (!state.roomState[roomId]) {
+    state.roomState["${roomId}"] = roomVents
+  } else {
+    return
+  }
+  def roomState = state.roomState // workaround to force the state to update
+  state.roomState = roomState
+  //logDebug state.roomState
 }
 
 // Operations
 
-def patchVent(com.hubitat.app.DeviceWrapper device, percentOpen) {
-  logDebug("Setting percent open for ${device} to ${percentOpen}%")
-  def deviceId = device.getDeviceNetworkId()
+def patchStructureData(attributes) {
+  if (!state.structureId) return
+  def body = [data: [type: "structures", attributes: attributes]]
+  def uri = BASE_URL + "/api/structures/${state.structureId}"
+  patchDataAsync(uri, null, body)
+}
 
-  def uri = 'https://api.flair.co/api/vents/' + deviceId
-  def headers = [ Authorization: 'Bearer ' + state.flairAccessToken ]
-  def contentType = 'application/json'
+
+def getStructureData() {
+  def uri = BASE_URL + '/api/structures'
+  getDataAsync(uri, handleStructureGet)
+}
+
+def handleStructureGet(resp, data) {
+  if (!isValidResponse(resp)) return
+  def response = resp.getJson()
+  //logDebug("handleStructureGet: ${response}")
+  if (!response?.data) {
+    return
+  }
+  def myStruct = resp.getJson().data.first();
+  if (!myStruct?.attributes) {
+    return
+  }
+  //state.structure = myStruct.attributes
+  state.structureId = myStruct.id
+}
+
+def patchVent(com.hubitat.app.DeviceWrapper device, percentOpen) {  
+  logDebug("Setting percent open for ${device} to ${percentOpen}%")
+  if (percentOpen > 100) {
+    percentOpen = 100
+  } else if (percentOpen  < 0) {
+    percentOpen = 0
+  }
+  def deviceId = device.getDeviceNetworkId()
+  def uri = BASE_URL + '/api/vents/' + deviceId
   def body = [
     data: [
       type: "vents", 
@@ -334,28 +443,14 @@ def patchVent(com.hubitat.app.DeviceWrapper device, percentOpen) {
       ]
     ]
   ]
-  def params = [
-    uri: uri, 
-    headers: headers, 
-    contentType: contentType, 
-    requestContentType: contentType,
-    body: groovy.json.JsonOutput.toJson(body)
-  ]
-  logDebug "sendAsynchttpPatch:${uri}, body:${params}"
-  asynchttpPatch(handleVentPatch, params, [device: device])
+  patchDataAsync(uri, handleVentPatch, body, [device: device])
 }
 
 def handleVentPatch(resp, data) {
-  def respCode = resp.getStatus()
-  if (resp.hasError()) {
-    def respError = resp.getErrorData().replaceAll('[\n]', '').replaceAll('[ \t]+', ' ')
-    log.error("Device-get response code: ${respCode}, body: ${respError}")
-  } else {
-    fullDevice = getChildDevice(data.device.getDeviceNetworkId())
-    traitExtract(fullDevice, resp.getJson(), 'percent-open', '%')
-  }
+  if (!isValidResponse(resp)) return
+  fullDevice = getChildDevice(data.device.getDeviceNetworkId())
+  traitExtract(fullDevice, resp.getJson(), 'percent-open', '%')
 }
-
 
 def patchRoom(com.hubitat.app.DeviceWrapper device, active) {
   def roomId = device.currentValue("room-id")
@@ -364,9 +459,7 @@ def patchRoom(com.hubitat.app.DeviceWrapper device, active) {
     return
   }
   
-  def uri = 'https://api.flair.co/api/rooms/' + roomId
-  def headers = [ Authorization: 'Bearer ' + state.flairAccessToken ]
-  def contentType = 'application/json'
+  def uri = BASE_URL+ '/api/rooms/' + roomId
   def body = [
     data: [
       type: "rooms", 
@@ -374,26 +467,166 @@ def patchRoom(com.hubitat.app.DeviceWrapper device, active) {
         "active": active == 'true' ? true: false
       ]
     ]
-  ]
-  
-  def params = [
-    uri: uri, 
-    headers: headers, 
-    contentType: contentType, 
-    requestContentType: contentType,
-    body: groovy.json.JsonOutput.toJson(body)
-  ]
-  logDebug "sendAsynchttpPatch:${uri}, body:${params}"
-  asynchttpPatch(handleRoomPatch, params, [device: device])
+  ] 
+  patchDataAsync(uri, handleRoomPatch, body, [device: device])
 }
 
 def handleRoomPatch(resp, data) {
-  def respCode = resp.getStatus()
-  if (resp.hasError()) {
-    def respError = resp.getErrorData().replaceAll('[\n]', '').replaceAll('[ \t]+', ' ')
-    log.error("Device-get response code: ${respCode}, body: ${respError}")
-  } else {
-    fullDevice = getChildDevice(data.device.getDeviceNetworkId())
-    traitExtract(fullDevice, resp.getJson(), 'active', 'room-active')
+  if (!isValidResponse(resp)) return
+  fullDevice = getChildDevice(data.device.getDeviceNetworkId())
+  traitExtract(fullDevice, resp.getJson(), 'active', 'room-active')
+}
+
+def thermostat1ChangeStateHandler(evt) {
+  logDebug "thermostat1ChangeStateHandler:${evt.value}"
+  switch(evt.value) {
+    case COOLING:
+    case HEATING:
+      state.thermostat1State = [mode: evt.value, startTime: now()]
+      runInMillis(1000, 'initializeRoomStates', [data: evt.value]) // wait a bit since setpoint is set a few ms later
+      break
+    default: 
+      if (state.thermostat1State) {
+        state.thermostat1State.mode = evt.value
+        state.thermostat1State.endTime = now()
+        finalizeRoomStates()
+      }
+      break
   }
+}
+
+// Dynamic Airflow Balancing
+
+def finalizeRoomStates() {
+  logDebug "finalizeRoomStates()"
+  if (state.roomState == null || state.thermostat1State == null) {
+    return
+  }
+  def totalMinutes = (now() - state.thermostat1State.startTime) / (1000 * 60)
+  logDebug "HVAC ran for ${totalMinutes} minutes"
+  if (totalMinutes < 5) {
+    // If it only ran for 5 minutes discard it
+    return
+  }
+  def roomState = state.roomState // workaround to force the state to update
+  roomState.each{roomId, stateVal -> 
+      roomState["${roomId}"] = calculateRoomChangeRate(roomId, stateVal, totalMinutes)
+  }
+  state.roomState = roomState
+}
+
+def initializeRoomStates(hvacMode) {
+  logDebug "initializeRoomStates(${hvacMode})"
+  if (state.roomState == null) {
+    return
+  }
+  // Get the target temperature from the thermostat
+  double setpoint = hvacMode == COOLING ? 
+    thermostat1.currentValue("coolingSetpoint") :
+    thermostat1.currentValue("heatingSetpoint")  
+  
+  if (thermostat1TempUnit == '2') {
+    // Convert fahrenheit to Celcius
+    double setpointFaren = setpoint
+    setpoint =  Math.round((setpoint - 32d) * (5d/9d))
+    logDebug "Converting setpoint from ${setpointFaren}F to ${setpoint}"
+  }
+  if (!setpoint) return
+  // Get the current temperature from each room
+  def longestTimeToGetToTarget = 0;
+  def roomState = state.roomState // workaround to force the state to update
+  roomState.each{ roomId, stateVal -> 
+      //logDebug "state.roomState: roomId=${roomId}, roomState=${stateVal}"
+      stateVal.ventIds.each {
+        def vent = getChildDevice(it)  
+        if (vent) {
+          stateVal.lastStartTemp = vent.currentValue("room-current-temperature-c")
+          def timeToTarget = 0
+          def rate = hvacMode == COOLING ? stateVal.coolingRate : stateVal.heatingRate
+          if (!hasRoomReachedSetpoint(hvacMode, setpoint, stateVal.lastStartTemp) && rate > 0) {
+            timeToTarget = Math.abs(setpoint - stateVal.lastStartTemp) / rate
+          }
+          if (longestTimeToGetToTarget < timeToTarget){
+            longestTimeToGetToTarget = timeToTarget
+          }
+          logDebug "state.roomState: vent=${vent}, roomTemp=${stateVal.lastStartTemp}"
+        }
+      }
+      roomState["${roomId}"] = stateVal
+  }
+  state.roomState = roomState
+  logDebug "initializeRoomStates - setpoint: ${setpoint}, longestTimeToGetToTarget: ${longestTimeToGetToTarget}"
+  if (longestTimeToGetToTarget == 0) {
+    return
+  }
+
+  // Set vents proportionally
+ roomState.each{roomId, stateVal -> 
+    stateVal.ventIds.each {
+      def vent = getChildDevice(it)
+      if (vent) {
+        def rate = hvacMode == COOLING ? stateVal.coolingRate :  stateVal.heatingRate
+        def percentageOpen = calculateVentOpenPercentange(setpoint, hvacMode, 
+            rate, stateVal.lastStartTemp, longestTimeToGetToTarget)
+        patchVent(vent, percentageOpen)
+      }
+    }    
+  }
+}
+
+def calculateVentOpenPercentange(setpoint, hvacMode, rate, lastStartTemp, longestTimeToGetToTarget, testing = false) {  
+  def percentageOpen = MAXIMUM_PERCENTAGE_OPEN;
+  if (setpoint > 0 && rate > 0 && longestTimeToGetToTarget > 0) {
+    if (testing == true || hasRoomReachedSetpoint(hvacMode, setpoint, lastStartTemp)) {
+      logDebug "calculateVentOpenPercentange: Room is already warmer/cooler (${lastStartTemp}) than setpoint (${setpoint})"
+      percentageOpen = MINIMUM_PERCENTAGE_OPEN
+    } else {
+      percentageOpen =  Math.abs(setpoint - lastStartTemp) / (rate * longestTimeToGetToTarget)            
+      percentageOpen = Math.round(percentageOpen * 100).toInteger() 
+      logDebug "Pre-calculated percent: ${percentageOpen}%"
+      if (percentageOpen < MINIMUM_PERCENTAGE_OPEN) {
+        percentageOpen = MINIMUM_PERCENTAGE_OPEN
+      } else if (percentageOpen > MAXIMUM_PERCENTAGE_OPEN) {
+        percentageOpen = MAXIMUM_PERCENTAGE_OPEN
+      }
+    }    
+  }
+  logDebug "calculateVentOpenPercentange: ${Math.abs(setpoint - lastStartTemp) / (rate * longestTimeToGetToTarget)}" + 
+      " = (${setpoint} - ${lastStartTemp}) / ( ${rate} * ${longestTimeToGetToTarget} )"
+  return percentageOpen
+}
+
+def calculateRoomChangeRate(roomId, stateVal, totalMinutes) {
+  logDebug "state.roomState: roomId=${roomId}, roomState=${stateVal}"
+  double currentTemp = 0.0d
+  def percentOpen = 0      
+  stateVal.ventIds.each {
+    def vent = getChildDevice(it)
+    if (vent) {
+      percentOpen = percentOpen + (vent.currentValue("percent-open")).toInteger()
+      currentTemp = vent.currentValue("room-current-temperature-c")
+    }
+  }
+  percentOpen = percentOpen / stateVal.ventIds.size()
+  if (percentOpen <= 5) {
+    logDebug "Vent was opened less than 5% (${percentOpen}), therefore it's being excluded"
+    return stateVal
+  }
+
+  double diffTemps = Math.abs(stateVal.lastStartTemp - currentTemp)
+  if (diffTemps < 0.25) {
+    logDebug "Current temp is ${currentTemp}. Difference in temperatures is less than 1 degree (${diffTemps}), therefore it's being excluded"
+    return stateVal
+  }
+
+  double rate = diffTemps / totalMinutes
+  double percentInpercent = percentOpen / 100.0d
+  def rateAt100 = rate / percentInpercent
+
+  if (state.thermostat1State.mode == COOLING) {
+    stateVal.coolingRate = rateAt100
+  } else {
+    stateVal.heatingRate = rateAt100
+  }
+  return stateVal
 }
