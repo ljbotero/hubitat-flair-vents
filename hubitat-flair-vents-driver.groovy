@@ -42,6 +42,7 @@ import groovy.json.JsonOutput
         attribute 'motor-run-time', 'number'
         attribute 'motor-current', 'number'
 
+        attribute 'structure-id', 'string'
         attribute 'room-id', 'string'
         attribute 'room-name', 'string'
         attribute 'room-current-temperature-c', 'number'
@@ -88,6 +89,14 @@ private logDebug(msg) {
     }
 }
 
+def setRefreshSchedule() {
+    if (devicePoll == null) {
+        device.updateSetting('devicePoll', 3)
+    }
+    unschedule(settingsRefresh)
+    schedule("0 0/${devicePoll} * 1/1 * ? *", settingsRefresh)
+}
+
 def installed() {
     logDebug('installed')
     initialize()
@@ -104,22 +113,17 @@ def uninstalled() {
 
 def initialize() {
     logDebug('initialize')
-    settingsRefresh()
+    refresh()
 }
 
 def refresh() {
     logDebug('refresh')
     settingsRefresh()
+    setRefreshSchedule()
 }
 
 def settingsRefresh() {
-    unschedule('settingsRefresh')    
     parent.getDeviceData(device)
-    if (devicePoll == null) {
-        device.updateSetting('devicePoll', 3)
-    }
-    def devicePollSecs = devicePoll*60
-    runIn(devicePollSecs, settingsRefresh)
 }
 
 void setLevel(level, duration=null) {
@@ -145,7 +149,6 @@ def getDeviceState(String attr) {
 }
 
 def setRoomActive(isActive) {
-    logDebug("setRoomActive: ${isActive}")
-    
+    logDebug("setRoomActive: ${isActive}")  
     parent.patchRoom(device, isActive)
 }
