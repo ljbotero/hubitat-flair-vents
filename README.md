@@ -2,6 +2,30 @@
 
 This app allows you to control [Flair Smart Vents](https://flair.co/) in [Hubitat](https://hubitat.com/).
 
+## Key Features
+The Hubitat integration for Flair Smart Vents provides several useful features:
+
+### Dynamic Airflow Balancing (Beta)
+The dynamic airflow balancing feature optimizes vent positions to reach and maintain the target temperature, while minimizing vent adjustments.
+
+It calculates the rate of temperature change for each room based on vent positions. It then sets the vents only as open as needed to reach the thermostat setpoint in sync.
+
+This reduces noise and wear from vent motors constantly adjusting. It also maximizes battery life by keeping the vents steady.
+
+### Granular Control
+You can set the exact vent open percentage, not just rely on Flair's auto-balancing.
+
+Control the vents from 0-100% open via Hubitat dashboard, rules, or through Alexa/Google voice control when linked.
+
+### Remote Control
+Control your vents and view status remotely through the Hubitat mobile app.
+
+### Presence Integration
+Link vent automation to presence sensors. Close vents when away to save energy.
+
+### Smart Scheduling
+Use Hubitat's rules and schedules to open/close vents based on time of day or other triggers.
+
 ## Installation 
 
 To install:
