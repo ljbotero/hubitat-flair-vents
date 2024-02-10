@@ -1,0 +1,14 @@
+{
+  "author": "Jaime Botero",
+  "gitHubUrl": "https://github.com/ljbotero",
+  "payPalUrl": "https://www.paypal.com/donate/?hosted_button_id=VJ8W4BBYXYPYG",
+  "packages": [
+    {
+      "id": "f2f5af6b-3729-41a2-8292-48d36b485b52",
+      "name": "Flair Vents",
+      "category": "Integrations",
+      "location": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/packageManifest.json",
+      "description": "Control Flair Smart Vents in Hubitat and add Dynamic Airflow Balancing"
+    }
+  ]
+}
