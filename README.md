@@ -68,3 +68,7 @@ This allows automating vent open/close based on routines, presence, or other tri
 You can control whether the room is active or not by setting **setRoomActive** attribute.
 
 ![Flair Vent Device](hubitat-flair-vents-device.png)
+
+## Join the Discussion
+
+https://community.hubitat.com/t/new-control-flair-vents-with-hubitat-free-open-source-app-and-driver/132728
