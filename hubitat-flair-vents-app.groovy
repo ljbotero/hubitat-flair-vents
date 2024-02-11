@@ -14,18 +14,19 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  version: 0.0.1
  */
 
-import hubitat.scheduling.AsyncResponse
 import groovy.transform.Field
 
 @Field static String BASE_URL = "https://api.flair.co"
 @Field static String CONTENT_TYPE = "application/json"
 @Field static String COOLING = "cooling"
 @Field static String HEATING = "heating"
+@Field static String IDLE = "idle"
 @Field static Double MINIMUM_PERCENTAGE_OPEN = 5
 @Field static Double MAXIMUM_PERCENTAGE_OPEN = 100
+@Field static Double MAX_MINUTES_TO_SETPOINT = 60 * 6
+@Field static Double ACCEPTABLE_SETPOINT_DEVIATION_C = 0.5
 
 definition(
         name: 'Flair Vents',
@@ -59,6 +60,12 @@ def mainPage() {
           runEvery1Hour login
         }
 
+        if (state?.authError) {
+          section {
+            paragraph "<span style='color: red;'>${state?.authError}</span>"
+          }
+        }
+
         if (state?.flairAccessToken != null) {
           section {
               input 'discoverDevices', 'button', title: 'Discover', submitOnChange: true
@@ -66,17 +73,22 @@ def mainPage() {
           listDiscoveredDevices()
 
           section("<h2>Dynamic Airflow Balancing (Beta)</h2>") {
-            input "dabEnabled", title: "Use Dynamic Airflow Balancing", submitOnChange: true, defaultValue: false, "bool"            
+            input "dabEnabled", title: "Use Dynamic Airflow Balancing", submitOnChange: true, defaultValue: false, "bool"
             if (dabEnabled) {
               input "thermostat1", title: "Choose Thermostat for Vents",  multiple: false, required: false, "capability.thermostat"
               input name: "thermostat1TempUnit", type: "enum", title: "Units used by Thermostat", defaultValue: 2, options: [1:"Celsius (°C)",2:"Fahrenheit (°F)"]
-              patchStructureData(["mode": "manual"])
-            } else {
+              input "thermostat1CloseInactiveRooms", title: "Close vents on inactive rooms", submitOnChange: true, defaultValue: true, "bool"
+              if (!state.thermostat1Mode || state.thermostat1Mode == "auto") {
+                patchStructureData(["mode": "manual"])
+                state.thermostat1Mode = "manual"
+              }              
+            } else if (!state.thermostat1Mode || state.thermostat1Mode == "manual") {
               patchStructureData(["mode": "auto"])
+              state.thermostat1Mode = "auto"
             }
-            if (thermostat1) {
-              unsubscribe(thermostat1,"thermostatOperatingState")
-              subscribe(thermostat1,"thermostatOperatingState", thermostat1ChangeStateHandler)
+            if (settings.thermostat1) {
+              unsubscribe(settings.thermostat1,"thermostatOperatingState")
+              subscribe(settings.thermostat1,"thermostatOperatingState", thermostat1ChangeStateHandler)
             }
           }          
         } else {
@@ -84,13 +96,8 @@ def mainPage() {
             paragraph 'Device discovery button is hidden until authorization is completed.'
           }
         }
-        if (state?.authError) {
-          section {
-            paragraph "${state?.authError}"
-          }
-        }
         section{
-            input name: "debugOutput", type: "bool", title: "Enable Debug Logging?", defaultValue: false, submitOnChange: true
+          input name: "debugLevel", type: "enum", title: "Choose debug level", defaultValue: 0, options: [0:"None",1:"Level 1 (All)", 2:"Level 2", 3:"Level 3"], submitOnChange: true
         }
   }
 }
@@ -113,34 +120,76 @@ def listDiscoveredDevices() {
 }
 
 def updated() {
-  logDebug 'Hubitat Flair App updating'
+  log('Hubitat Flair App updating', 2)
 }
 
 def installed() {
-  logDebug 'Hubitat Flair App installed'
+  log('Hubitat Flair App installed', 2)
 }
 
 def uninstalled() {
-  logDebug 'Hubitat Flair App uninstalling'
+  log('Hubitat Flair App uninstalling', 2)
   removeChildren()
   unschedule()
   unsubscribe()
 }
 
 def initialize(evt) {
-  logDebug(evt)
+  log(evt, 2)
 }
 
 // Helpers
 
+private getTempOfColdestAndHottestRooms(roomStates) {
+  def tempColdestRoom = 0
+  def tempHottestRoom = 0
+  roomStates.each{ roomId, stateVal -> 
+      stateVal.ventIds.each {
+      def vent = getChildDevice(it)  
+      if (vent) {
+        stateVal.lastStartTemp = vent.currentValue("room-current-temperature-c")
+        if (tempHottestRoom < stateVal.lastStartTemp) {
+          tempHottestRoom = stateVal.lastStartTemp
+        }
+        if (tempColdestRoom == 0 || tempColdestRoom > stateVal.lastStartTemp) {
+          tempColdestRoom = stateVal.lastStartTemp
+        }
+      }
+    }
+  }
+  return [tempColdestRoom: tempColdestRoom, tempHottestRoom: tempHottestRoom]
+}
+
+def getThermostatSetpoint(hvacMode) {
+  double setpoint = hvacMode == COOLING ? 
+    thermostat1.currentValue("coolingSetpoint") :
+    thermostat1.currentValue("heatingSetpoint")  
+  
+  if (settings.thermostat1TempUnit == '2') {
+    setpoint =  convertFahrenheitToCentigrades(setpoint)
+  }
+  setpoint = hvacMode == COOLING ? 
+    setpoint - ACCEPTABLE_SETPOINT_DEVIATION_C : 
+    setpoint + ACCEPTABLE_SETPOINT_DEVIATION_C
+  return setpoint
+}
+
+def convertFahrenheitToCentigrades(tempValue) {
+  return (tempValue - 32d) * (5d/9d)
+}
+
+def roundToNearestFifth(double num) {
+  return Math.round(num / 5.0d) * 5.0d
+}
+
 def hasRoomReachedSetpoint(hvacMode, setpoint, currentVentTemp) {
   // With a 0.5 degrees of wiggle room
-  return (hvacMode == COOLING && setpoint - 0.5 >= currentVentTemp) || (hvacMode == HEATING && setpoint + 0.5 <= currentVentTemp)
+  return (hvacMode == COOLING && setpoint >= currentVentTemp) || (hvacMode == HEATING && setpoint <= currentVentTemp)
 }
 
 void removeChildren() {
   def children = getChildDevices()
-  logDebug("Deleting all child devices: ${children}")
+  log("Deleting all child devices: ${children}", 2)
   children.each {
         if (it != null) {
       deleteChildDevice it.getDeviceNetworkId()
@@ -148,17 +197,22 @@ void removeChildren() {
   }
 }
 
-private logDebug(msg) {
-  if (settings?.debugOutput) {
+// Level 1 is the most verbose
+private log(msg, level = 3) {
+  if (settings?.debugLevel == 0) return
+  if (settings?.debugLevel <= level) {
     log.debug(msg)
   }
 }
 
 def isValidResponse(resp) {
-  def respCode = resp.getStatus()
-  if (resp.hasError()) {
-    def respError = resp.getErrorData().replaceAll('[\n]', '').replaceAll('[ \t]+', ' ')
-    log.error("Device-get response code: ${respCode}, body: ${respError}")
+  if (!resp) {
+    log.error("HTTP Null response")
+    return false
+  } else if (resp.hasError()) {    
+    def respCode = resp.getStatus()
+    def respError = resp.getErrorData()
+    log.error("HTTP response code: ${respCode}, body: ${respError}")
     return false
   } 
   return true
@@ -182,7 +236,7 @@ def patchDataAsync(uri, handler, body, data = null) {
     body: groovy.json.JsonOutput.toJson(body)
   ]
   asynchttpPatch(handler, httpParams, data)
-  logDebug "patchDataAsync:${uri}, body:${body}"
+  log("patchDataAsync:${uri}, body:${body}", 1)
 }
 
 def login() {
@@ -191,10 +245,10 @@ def login() {
 }
 
 
-// OAuth
+// ### OAuth ###
 
 def autheticate() {
-  //logDebug('Getting access_token from Flair')
+  log('Getting access_token from Flair', 2)
   def uri = BASE_URL + '/oauth2/token'
   def body = "client_id=${settings?.clientId}&client_secret=${settings?.clientSecret}&scope=vents.view+vents.edit+structures.view+structures.edit&grant_type=client_credentials"
   def params = [uri: uri, body: body]
@@ -202,7 +256,7 @@ def autheticate() {
       httpPost(params) { response -> handleAuthResponse(response) }
       state.remove('authError')
     } catch (groovyx.net.http.HttpResponseException e) {
-      String err = "Login failed -- ${e.getLocalizedMessage()}: ${e.response.data}"
+      String err = "Login failed - ${e.getLocalizedMessage()}: ${e.response.data}"
       log.error(err)
       state.authError = err
       return err
@@ -212,11 +266,11 @@ def autheticate() {
 
 def handleAuthResponse(resp) {
   def respJson = resp.getData()
-  //logDebug("Authorized scopes: ${respJson.scope}")
+  log("Authorized scopes: ${respJson.scope}", 1)
   state.flairAccessToken = respJson.access_token
 }
 
-// Get devices
+// ### Get devices ###
 
 def appButtonHandler(btn) {
   switch (btn) {
@@ -227,7 +281,7 @@ def appButtonHandler(btn) {
 }
 
 private void discover() {
-  logDebug('Discovery started')
+  log('Discovery started', 3)
   def uri = BASE_URL + '/api/vents'
   getDataAsync(uri, handleDeviceList)
 }
@@ -248,27 +302,16 @@ def handleDeviceList(resp, data) {
 }
 
 def makeRealDevice(device) {
-  def deviceType = "Flair ${device.type}"
-  try {
-    addChildDevice(
-            'bot.flair',
-            deviceType.toString(),
-            device.id,
-            [
-                name: device.label,
-                label: device.label
-            ]
-        )
-    } catch (com.hubitat.app.exception.UnknownDeviceTypeException e) {
-    log.warn("${e.message} - you need to install the appropriate driver: ${device.type}")
-    } catch (IllegalArgumentException ignored) {
-    //Intentionally ignored.  Expected if device id already exists in HE.
-    getChildDevice(device.id)
+  def newDevice = getChildDevice(device.id)
+  if (!newDevice) {
+    def deviceType = "Flair ${device.type}"
+    newDevice = addChildDevice('bot.flair', deviceType.toString(), device.id, [name: device.label, label: device.label])
   }
+  return newDevice
 }
 
-def getDeviceData(com.hubitat.app.DeviceWrapper device) {
-  //logDebug("Refresh device details for ${device}")
+def getDeviceData(device) {
+  log("Refresh device details for ${device}", 1)
   def deviceId = device.getDeviceNetworkId()
 
   def uri = BASE_URL + '/api/vents/' + deviceId + '/current-reading'
@@ -278,7 +321,7 @@ def getDeviceData(com.hubitat.app.DeviceWrapper device) {
   getDataAsync(uri, handleRoomGet, [device: device])
 }
 
-// Get device data
+// ### Get device data ###
 
 def handleRoomGet(resp, data) {
   if (!isValidResponse(resp)) return
@@ -300,16 +343,14 @@ def traitExtract(device, details, propNameData, propNameDriver = propNameData, u
     } else {
       sendEvent(device, [name: propNameDriver, value: propValue])
     }
-    //logDebug("${propName} = ${propValue}")
+    log("${propName} = ${propValue}", 1)
   }
 }
 
 def processVentTraits(device, details) {
- // logDebug("Processing Vent data for ${device}: ${details}")
+ log("Processing Vent data for ${device}: ${details}", 1)
 
-  if (!details.data) {
-    return;
-  }
+  if (!details.data) return
   traitExtract(device, details, 'firmware-version-s')
   traitExtract(device, details, 'rssi')
   traitExtract(device, details, 'connected-gateway-puck-id')
@@ -323,19 +364,12 @@ def processVentTraits(device, details) {
   traitExtract(device, details, 'has-buzzed')
   traitExtract(device, details, 'updated-at')
   traitExtract(device, details, 'inactive')
-
-    if (!details?.data?.relationships?.vents?.data) {
-    return;
-  }
-
 }
 
 def processRoomTraits(device, details) {
-  // logDebug("Processing Room data for ${device}: ${details}")
+  log("Processing Room data for ${device}: ${details}", 1)
 
-  if (!details?.data) {
-    return;
-  }
+  if (!details?.data) return
   def roomId = details.data.id
   sendEvent(device, [name: 'room-id', value: roomId])  
   traitExtract(device, details, 'name', 'room-name')
@@ -375,16 +409,14 @@ def processRoomTraits(device, details) {
 }
 
 def updateByRoomIdState(details) {  
-  if (!details?.data?.relationships?.vents?.data) {
-    return;
-  }
+  if (!details?.data?.relationships?.vents?.data) return
   def roomId = details.data.id
   def ventIds = []
   details.data.relationships.vents.data.each {
     ventIds.add(it.id)
   }
   def roomVents = [roomName: details.data.attributes.name, ventIds: ventIds, heatingRate: 0, coolingRate: 0, lastStartTemp: 0]
-  if (state?.roomState == null) {
+  if (!state.roomState) {
      state.roomState = ["${roomId}": roomVents]
   } else if (!state.roomState[roomId]) {
     state.roomState["${roomId}"] = roomVents
@@ -393,10 +425,10 @@ def updateByRoomIdState(details) {
   }
   def roomState = state.roomState // workaround to force the state to update
   state.roomState = roomState
-  //logDebug state.roomState
+  log(state.roomState, 1)
 }
 
-// Operations
+// ### Operations ###
 
 def patchStructureData(attributes) {
   if (!state.structureId) return
@@ -404,7 +436,6 @@ def patchStructureData(attributes) {
   def uri = BASE_URL + "/api/structures/${state.structureId}"
   patchDataAsync(uri, null, body)
 }
-
 
 def getStructureData() {
   def uri = BASE_URL + '/api/structures'
@@ -414,20 +445,19 @@ def getStructureData() {
 def handleStructureGet(resp, data) {
   if (!isValidResponse(resp)) return
   def response = resp.getJson()
-  //logDebug("handleStructureGet: ${response}")
+  log("handleStructureGet: ${response}", 1)
   if (!response?.data) {
     return
   }
-  def myStruct = resp.getJson().data.first();
+  def myStruct = resp.getJson().data.first()
   if (!myStruct?.attributes) {
     return
   }
-  //state.structure = myStruct.attributes
   state.structureId = myStruct.id
 }
 
 def patchVent(com.hubitat.app.DeviceWrapper device, percentOpen) {  
-  logDebug("Setting percent open for ${device} to ${percentOpen}%")
+  log("Setting percent open for ${device} to ${percentOpen}%", 3)
   if (percentOpen > 100) {
     percentOpen = 100
   } else if (percentOpen  < 0) {
@@ -454,7 +484,7 @@ def handleVentPatch(resp, data) {
 
 def patchRoom(com.hubitat.app.DeviceWrapper device, active) {
   def roomId = device.currentValue("room-id")
-  logDebug("Setting room attributes for ${roomId} to active:${active}%")
+  log("Setting room attributes for ${roomId} to active:${active}%", 3)
   if (!roomId || active == null) {
     return
   }
@@ -478,32 +508,40 @@ def handleRoomPatch(resp, data) {
 }
 
 def thermostat1ChangeStateHandler(evt) {
-  logDebug "thermostat1ChangeStateHandler:${evt.value}"
+  log("thermostat changed state to:${evt.value}", 2)
   switch(evt.value) {
     case COOLING:
     case HEATING:
       state.thermostat1State = [mode: evt.value, startTime: now()]
       runInMillis(1000, 'initializeRoomStates', [data: evt.value]) // wait a bit since setpoint is set a few ms later
-      break
-    default: 
-      if (state.thermostat1State) {
-        state.thermostat1State.mode = evt.value
-        state.thermostat1State.endTime = now()
-        finalizeRoomStates()
+      unschedule(checkActiveRooms)
+      if (settings.thermostat1CloseInactiveRooms == true) {
+        runEvery5Minutes("checkActiveRooms")
       }
       break
+    case IDLE:
+      unschedule(checkActiveRooms)
+      if (state.thermostat1State)  {        
+        def lastMode = state.thermostat1State.mode
+        state.thermostat1State.mode = evt.value
+        state.thermostat1State.endTime = now()
+        if (lastMode == COOLING || lastMode == HEATING) {
+          finalizeRoomStates()
+        }
+      }
+      break    
   }
 }
 
-// Dynamic Airflow Balancing
+// ### Dynamic Airflow Balancing ###
 
 def finalizeRoomStates() {
-  logDebug "finalizeRoomStates()"
-  if (state.roomState == null || state.thermostat1State == null) {
+  log("Finalizing room states", 3)
+  if (!state.roomState || !state.thermostat1State) {
     return
   }
   def totalMinutes = (now() - state.thermostat1State.startTime) / (1000 * 60)
-  logDebug "HVAC ran for ${totalMinutes} minutes"
+  log("HVAC ran for ${totalMinutes} minutes", 3)
   if (totalMinutes < 5) {
     // If it only ran for 5 minutes discard it
     return
@@ -516,74 +554,114 @@ def finalizeRoomStates() {
 }
 
 def initializeRoomStates(hvacMode) {
-  logDebug "initializeRoomStates(${hvacMode})"
-  if (state.roomState == null) {
-    return
-  }
+  log("Initializing room states - hvac mode: ${hvacMode})", 3)
+  if (!state.roomState) return
   // Get the target temperature from the thermostat
-  double setpoint = hvacMode == COOLING ? 
-    thermostat1.currentValue("coolingSetpoint") :
-    thermostat1.currentValue("heatingSetpoint")  
-  
-  if (thermostat1TempUnit == '2') {
-    // Convert fahrenheit to Celcius
-    double setpointFaren = setpoint
-    setpoint =  Math.round((setpoint - 32d) * (5d/9d))
-    logDebug "Converting setpoint from ${setpointFaren}F to ${setpoint}"
-  }
-  if (!setpoint) return
-  // Get the current temperature from each room
-  def longestTimeToGetToTarget = 0;
-  def roomState = state.roomState // workaround to force the state to update
-  roomState.each{ roomId, stateVal -> 
-      //logDebug "state.roomState: roomId=${roomId}, roomState=${stateVal}"
-      stateVal.ventIds.each {
-        def vent = getChildDevice(it)  
-        if (vent) {
-          stateVal.lastStartTemp = vent.currentValue("room-current-temperature-c")
-          def timeToTarget = 0
-          def rate = hvacMode == COOLING ? stateVal.coolingRate : stateVal.heatingRate
-          if (!hasRoomReachedSetpoint(hvacMode, setpoint, stateVal.lastStartTemp) && rate > 0) {
-            timeToTarget = Math.abs(setpoint - stateVal.lastStartTemp) / rate
-          }
-          if (longestTimeToGetToTarget < timeToTarget){
-            longestTimeToGetToTarget = timeToTarget
-          }
-          logDebug "state.roomState: vent=${vent}, roomTemp=${stateVal.lastStartTemp}"
-        }
-      }
-      roomState["${roomId}"] = stateVal
-  }
-  state.roomState = roomState
-  logDebug "initializeRoomStates - setpoint: ${setpoint}, longestTimeToGetToTarget: ${longestTimeToGetToTarget}"
-  if (longestTimeToGetToTarget == 0) {
-    return
+  double setpoint = getThermostatSetpoint(hvacMode)
+  def tempData = getTempOfColdestAndHottestRooms(state.roomState)
+  if (hvacMode == COOLING && tempData.tempColdestRoom < setpoint) {
+    setpoint = tempData.tempColdestRoom
+    log("Setting setpoint to coldest room at ${setpoint}C", 3)
+  } else if (hvacMode == HEATING && tempData.tempHottestRoom > setpoint) {
+    setpoint = tempData.tempHottestRoom
+    log("Setting setpoint to hottest room at ${setpoint}C", 3)
   }
 
+  // Get the current temperature from each room
+  def longestTimeToGetToTarget = captureRoomTempsAndCalculateLongestMinutesToTarget(hvacMode, setpoint)
+  if (longestTimeToGetToTarget <= 0) {
+    log("Keeping vents unchanged (setpoint: ${setpoint}, longestTimeToGetToTarget: ${longestTimeToGetToTarget})", 3)
+    return
+  }
+  log("Initializing room states - setpoint: ${setpoint}, longestTimeToGetToTarget: ${longestTimeToGetToTarget}", 3)
+
   // Set vents proportionally
- roomState.each{roomId, stateVal -> 
+  def roomState = state.roomState
+  roomState.each{roomId, stateVal -> 
     stateVal.ventIds.each {
       def vent = getChildDevice(it)
       if (vent) {
-        def rate = hvacMode == COOLING ? stateVal.coolingRate :  stateVal.heatingRate
+        def rate = hvacMode == COOLING ? stateVal.coolingRate : stateVal.heatingRate
         def percentageOpen = calculateVentOpenPercentange(setpoint, hvacMode, 
             rate, stateVal.lastStartTemp, longestTimeToGetToTarget)
+        roomState["${roomId}"].percentOpen = percentageOpen
+        def isRoomActive = vent.currentValue("room-active") == "true"
+        if (settings.thermostat1CloseInactiveRooms == true && !isRoomActive) {
+          def roomName = roomState["${roomId}"].roomName
+          log("Closing vent on inactive room (${roomName})", 3)
+          percentOpen = MINIMUM_PERCENTAGE_OPEN
+        }
         patchVent(vent, percentageOpen)
+      }
+    }    
+  }
+  state.roomState = roomState
+}
+
+def checkActiveRooms() {
+  def roomState = state.roomState
+  if (!roomState) return
+  roomState.each{roomId, stateVal -> 
+    stateVal.ventIds.each {
+      def vent = getChildDevice(it)
+      if (vent) {
+        boolean isRoomActive = vent.currentValue("room-active") == "true"
+        def currPercentOpen = (vent.currentValue("percent-open")).toInteger()
+        def calculatedPercentOpen = roomState["${roomId}"].percentOpen
+        String roomName = roomState["${roomId}"].roomName
+        if (isRoomActive && calculatedPercentOpen > currPercentOpen)  {
+          log("Opening vent on active room (${roomName})", 3)
+          patchVent(vent, calculatedPercentOpen)
+        } else if (!isRoomActive && currPercentOpen > MINIMUM_PERCENTAGE_OPEN) {
+          log("Closing vent on inactive room (${roomName})", 3)
+          patchVent(vent, calculatedPercentOpen)
+        }
       }
     }    
   }
 }
 
-def calculateVentOpenPercentange(setpoint, hvacMode, rate, lastStartTemp, longestTimeToGetToTarget, testing = false) {  
-  def percentageOpen = MAXIMUM_PERCENTAGE_OPEN;
+def captureRoomTempsAndCalculateLongestMinutesToTarget(hvacMode, setpoint) {
+  def longestTimeToGetToTarget = 0
+  def roomState = state.roomState // workaround to force the state to update
+  roomState.each{ roomId, stateVal -> 
+      log("state.roomState: roomId=${roomId}, roomState=${stateVal}", 1)
+      stateVal.ventIds.each {
+        def vent = getChildDevice(it)  
+        if (vent) {
+          stateVal.lastStartTemp = vent.currentValue("room-current-temperature-c")
+          def minutesToTarget = 0
+          def rate = hvacMode == COOLING ? stateVal.coolingRate : stateVal.heatingRate
+          if (!hasRoomReachedSetpoint(hvacMode, setpoint, stateVal.lastStartTemp) && rate > 0) {
+            minutesToTarget = Math.abs(setpoint - stateVal.lastStartTemp) / rate
+          }
+          if (minutesToTarget > MAX_MINUTES_TO_SETPOINT) {
+              minutesToTarget = MAX_MINUTES_TO_SETPOINT
+              log("A very long time to target reached limit of ${MAX_MINUTES_TO_SETPOINT} minutes", 3)
+          } else if (minutesToTarget < 0) {
+            minutesToTarget = 0
+          }
+          if (longestTimeToGetToTarget < minutesToTarget){
+            longestTimeToGetToTarget = minutesToTarget
+          }
+          log("state.roomState: vent=${vent}, roomTemp=${stateVal.lastStartTemp}", 3)
+        }
+      }
+      roomState["${roomId}"] = stateVal
+  }
+  state.roomState = roomState
+  return longestTimeToGetToTarget
+}
+
+def calculateVentOpenPercentange(setpoint, hvacMode, rate, startTemp, longestTimeToGetToTarget) {  
+  def percentageOpen = MAXIMUM_PERCENTAGE_OPEN
   if (setpoint > 0 && rate > 0 && longestTimeToGetToTarget > 0) {
-    if (testing == true || hasRoomReachedSetpoint(hvacMode, setpoint, lastStartTemp)) {
-      logDebug "calculateVentOpenPercentange: Room is already warmer/cooler (${lastStartTemp}) than setpoint (${setpoint})"
+    if (hasRoomReachedSetpoint(hvacMode, setpoint, startTemp)) {
+      log("Room is already warmer/cooler (${startTemp}) than setpoint (${setpoint})", 3)
       percentageOpen = MINIMUM_PERCENTAGE_OPEN
     } else {
-      percentageOpen =  Math.abs(setpoint - lastStartTemp) / (rate * longestTimeToGetToTarget)            
-      percentageOpen = Math.round(percentageOpen * 100).toInteger() 
-      logDebug "Pre-calculated percent: ${percentageOpen}%"
+      percentageOpen =  Math.abs(setpoint - startTemp) / (rate * longestTimeToGetToTarget)            
+      percentageOpen = roundToNearestFifth(percentageOpen * 100)
       if (percentageOpen < MINIMUM_PERCENTAGE_OPEN) {
         percentageOpen = MINIMUM_PERCENTAGE_OPEN
       } else if (percentageOpen > MAXIMUM_PERCENTAGE_OPEN) {
@@ -591,13 +669,13 @@ def calculateVentOpenPercentange(setpoint, hvacMode, rate, lastStartTemp, longes
       }
     }    
   }
-  logDebug "calculateVentOpenPercentange: ${Math.abs(setpoint - lastStartTemp) / (rate * longestTimeToGetToTarget)}" + 
-      " = (${setpoint} - ${lastStartTemp}) / ( ${rate} * ${longestTimeToGetToTarget} )"
+  log("Open Percentange: ${Math.abs(setpoint - startTemp) / (rate * longestTimeToGetToTarget)}" + 
+      " = (${setpoint} - ${startTemp}) / ( ${rate} * ${longestTimeToGetToTarget} )", 2)
   return percentageOpen
 }
 
 def calculateRoomChangeRate(roomId, stateVal, totalMinutes) {
-  logDebug "state.roomState: roomId=${roomId}, roomState=${stateVal}"
+  log("state.roomState: roomId=${roomId}, roomState=${stateVal}", 2)
   double currentTemp = 0.0d
   def percentOpen = 0      
   stateVal.ventIds.each {
@@ -608,14 +686,14 @@ def calculateRoomChangeRate(roomId, stateVal, totalMinutes) {
     }
   }
   percentOpen = percentOpen / stateVal.ventIds.size()
-  if (percentOpen <= 5) {
-    logDebug "Vent was opened less than 5% (${percentOpen}), therefore it's being excluded"
+  if (percentOpen <= MINIMUM_PERCENTAGE_OPEN) {
+    log("Vent was opened less than ${MINIMUM_PERCENTAGE_OPEN}% (${percentOpen}), therefore it's being excluded", 3)
     return stateVal
   }
 
   double diffTemps = Math.abs(stateVal.lastStartTemp - currentTemp)
   if (diffTemps < 0.25) {
-    logDebug "Current temp is ${currentTemp}. Difference in temperatures is less than 1 degree (${diffTemps}), therefore it's being excluded"
+    log("Current temp is ${currentTemp}. Difference in temperatures is less than 0.25 degree (${diffTemps}), therefore it's being excluded", 3)
     return stateVal
   }
 
