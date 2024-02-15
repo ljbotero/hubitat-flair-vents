@@ -13,26 +13,12 @@ import spock.lang.Specification
 class Test extends Specification
 {
     def sandbox = new HubitatAppSandbox(new File("hubitat-flair-vents-app.groovy"))
-
-    def log = Mock(Log)
-    def app = Mock(InstalledAppWrapper){
-        _*getLabel() >> "My label"
-    }
-    def state = [:]
-
-    AppExecutor executorApi = Mock{
-        _*getLog() >> log
-        _*getState() >> state
-        _*getApp() >> app
-    }
-
     def validationFlags = [
             Flags.DontValidateMetadata,
             Flags.DontValidatePreferences,
             Flags.DontValidateDefinition,
             Flags.DontRestrictGroovy
-          ]
-    def userSettingValues = [ clientId: "", clientSecret: "" ]
+          ]    
 
     def testRoomStates = [
       "122127":["coolingRate":0.055, "lastStartTemp":24.388, "heatingRate":0.030, "roomName":"", "ventIds":["1222bc5e"]], 
@@ -46,6 +32,9 @@ class Test extends Specification
 
     def "roundToNearestFifth()"() {
       setup:
+        AppExecutor executorApi = Mock{
+          _*getState() >> [:]
+        }
         def script = sandbox.run(api: executorApi, validationFlags: validationFlags)
       expect:
         script.roundToNearestFifth(12.4) == 10
@@ -55,38 +44,22 @@ class Test extends Specification
         script.roundToNearestFifth(97.5) == 100
     }
 
-    def "finalizeRoomStates"() {
-      // TODO
-    }
-
-    def "initializeRoomStates"() {
-      // TODO
-    }
-
-    def "checkActiveRooms"() {
-      // TODO
-    }
-
-    def "captureRoomTempsAndCalculateLongestMinutesToTarget()"() {
-      // TODO
-    }
-
     def "calculateVentOpenPercentange()"() {
       setup:
+         AppExecutor executorApi = Mock{
+          _*getState() >> [:]
+        }
         def script = sandbox.run(api: executorApi, validationFlags: validationFlags)
 
       expect:
         script.calculateVentOpenPercentange(70, "heating", 0.698, 62, 12.6) == 90
         script.calculateVentOpenPercentange(70, "heating", 0.715, 65, 12.6) == 55
         script.calculateVentOpenPercentange(70, "heating", 0.550, 61, 20) == 80
-        script.calculateVentOpenPercentange(82, "cooling", 0.850, 98, 20) == 95
-        script.calculateVentOpenPercentange(82, "cooling", 0.950, 98, 20) == 85
-        script.calculateVentOpenPercentange(82, "cooling", 2.5, 98, 90) == 5
-        script.calculateVentOpenPercentange(82, "cooling", 2.5, 98, 900) == 5
-    }
-
-    def "calculateRoomChangeRate()"() {
-      // TODO
+        script.calculateVentOpenPercentange(82, "cooling", 0.850, 98, 20) == 100
+        script.calculateVentOpenPercentange(82, "cooling", 0.950, 84, 20) == 10
+        script.calculateVentOpenPercentange(82, "cooling", 0.950, 85, 20) == 15
+        script.calculateVentOpenPercentange(82, "cooling", 2.5, 86, 90) == 5
+        script.calculateVentOpenPercentange(82, "cooling", 2.5, 87, 900) == 5
     }
 
 }

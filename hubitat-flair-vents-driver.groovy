@@ -70,6 +70,7 @@ import groovy.json.JsonOutput
         attribute 'room-active', 'string'
         attribute 'room-set-point-manual', 'string'
         attribute 'room-pucks-inactive', 'string'
+        attribute 'room-occupied', 'number'
 
         command 'setRoomActive', [[name: 'roomActive',  type: 'ENUM', constraints: ['true', 'false']]]
     }
