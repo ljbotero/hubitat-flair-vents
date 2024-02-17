@@ -23,14 +23,17 @@ import groovy.transform.Field
 @Field static String COOLING = "cooling"
 @Field static String HEATING = "heating"
 @Field static String IDLE = "idle"
-@Field static Double MINIMUM_PERCENTAGE_OPEN = 5
+@Field static Double MINIMUM_PERCENTAGE_OPEN = 5.0
 @Field static Double ROOM_RATE_CALC_MINIMUM_MINUTES = 2.5
-@Field static Double MAXIMUM_PERCENTAGE_OPEN = 100
+@Field static Double MAXIMUM_PERCENTAGE_OPEN = 100.0
 @Field static Double MAX_MINUTES_TO_SETPOINT = 60 * 6
 @Field static Double ACCEPTABLE_SETPOINT_DEVIATION_C = 0.5
 @Field static Double MAX_DIFFERENCE_IN_TEMPS_C = 15.0
 @Field static Double MAX_TEMP_CHANGE_RATE_C = 2.0
-@Field static Double MIN_TEMP_CHANGE_RATE_C = 0.001
+@Field static Double MIN_TEMP_CHANGE_RATE_C = 0.0001
+@Field static Double MINIMUM_COMBINED_VENT_FLOW_PERCENTAGE = 30.0
+@Field static Double INREMENT_PERCENTAGE_WHEN_REACHING_VENT_FLOW_TAGET = 2.5
+@Field static Integer MAX_NUMBER_OF_STANDARD_VENTS = 15
 
 definition(
         name: 'Flair Vents',
@@ -80,8 +83,17 @@ def mainPage() {
             input "dabEnabled", title: "Use Dynamic Airflow Balancing", submitOnChange: true, defaultValue: false, "bool"
             if (dabEnabled) {
               input "thermostat1", title: "Choose Thermostat for Vents",  multiple: false, required: false, "capability.thermostat"
+              input "thermostat1AdditionalStandardVents", title: "Count of conventional Vents", submitOnChange: true, defaultValue: 0, "number"
+              paragraph "<small>Enter the total number of standard (non-Flair) adjustable vents in the home associated with the chosen thermostat, excluding Flair vents. " + 
+                "This value will ensure the combined airflow across all vents does not drop below a specified percent. It is used to maintain adequate airflow and prevent " +
+                "potential frosting or other HVAC problems caused by lack of air movement.</small>"
               input name: "thermostat1TempUnit", type: "enum", title: "Units used by Thermostat", defaultValue: 2, options: [1:"Celsius (°C)",2:"Fahrenheit (°F)"]
               input "thermostat1CloseInactiveRooms", title: "Close vents on inactive rooms", submitOnChange: true, defaultValue: true, "bool"
+              if (settings.thermostat1AdditionalStandardVents < 0) {
+                app.updateSetting("thermostat1AdditionalStandardVents", 0)
+              } else if (settings.thermostat1AdditionalStandardVents > MAX_NUMBER_OF_STANDARD_VENTS) {
+                app.updateSetting("thermostat1AdditionalStandardVents", MAX_NUMBER_OF_STANDARD_VENTS)
+              }
               if (!atomicState.thermostat1Mode || atomicState.thermostat1Mode == "auto") {
                 patchStructureData(["mode": "manual"])
                 atomicState.thermostat1Mode = "manual"
@@ -144,6 +156,11 @@ def initialize(evt) {
 
 // Helpers
 
+private atomicStateUpdate(stateKey, key, value) {
+  atomicState.updateMapValue(stateKey, key, value)
+  log("atomicStateUpdate(${stateKey}, ${key}, ${value}", 1)
+}
+
 private getTempOfColdestAndHottestRooms() {
   def tempColdestRoom = 0
   def tempHottestRoom = 0
@@ -161,7 +178,7 @@ private getTempOfColdestAndHottestRooms() {
         }
       }
     }
-    atomicState.updateMapValue("roomState", roomId, stateVal)
+    atomicStateUpdate("roomState", roomId, stateVal)
   }
   return [tempColdestRoom: tempColdestRoom, tempHottestRoom: tempHottestRoom]
 }
@@ -435,8 +452,15 @@ def updateByRoomIdState(details) {
     ventIds.add(it.id)
   }
   if (!atomicState.roomState?."${roomId}") {
-    def roomVents = [roomName: details.data.attributes.name, ventIds: ventIds, heatingRate: 0, coolingRate: 0, lastStartTemp: 0]
-    atomicState.updateMapValue("roomState", roomId, roomVents)  
+    def roomVents = [
+      roomName: details.data.attributes.name, 
+      ventIds: ventIds, 
+      heatingRate: 0, 
+      coolingRate: 0, 
+      lastStartTemp: 0,
+      percentOpen: 0
+    ]
+    atomicStateUpdate("roomState", roomId, roomVents)  
   }
   log(atomicState.roomState, 1)
 }
@@ -552,7 +576,7 @@ def finalizeRoomStates() {
   if (totalMinutes >= ROOM_RATE_CALC_MINIMUM_MINUTES) {
     def roomStates = atomicState.roomState
     roomStates.each{roomId, stateVal -> 
-        atomicState.updateMapValue("roomState", roomId,
+        atomicStateUpdate("roomState", roomId,
            calculateRoomChangeRate(roomId, stateVal, totalMinutes))
     }
   }
@@ -581,7 +605,70 @@ def initializeRoomStates(hvacMode) {
   }
   log("Initializing room states - setpoint: ${setpoint}, longestTimeToGetToTarget: ${longestTimeToGetToTarget}", 3)
 
-  // Set vents proportionally
+  // Calculate percent open for each vent vents proportionally
+  calculateOpenPercentageForAllVents(hvacMode, setpoint, longestTimeToGetToTarget)
+
+  // Ensure mimimum combined vent flow across vents
+  adjustVentOpeningsToEnsureMinimumAirflowTarget(settings.thermostat1AdditionalStandardVents, atomicStateUpdate)
+
+  // Apply open percentage across all vents
+  atomicState.roomState.each{roomId, stateVal -> 
+    stateVal.ventIds.each {
+      def vent = getChildDevice(it)
+      if (vent) {
+        patchVent(vent, stateVal.percentOpen)
+      }
+    }
+  }  
+}
+
+def adjustVentOpeningsToEnsureMinimumAirflowTarget(additionalStandardVents, atomicStateUpdateRef = atomicStateUpdate) {
+  def totalDeviceCount = additionalStandardVents > 0 ? additionalStandardVents: 0
+  def sumPercentages = totalDeviceCount * 100 // Assuming all standard vents are at 100%
+  atomicState.roomState.each{roomId, stateVal -> 
+    stateVal.ventIds.each {
+      totalDeviceCount++
+      if (stateVal.percentOpen) {
+        sumPercentages += stateVal.percentOpen
+      }
+    }
+  }
+  if (totalDeviceCount <= 0) {
+    log("totalDeviceCount is zero", 3)
+    return
+  }
+  def combinedVentFlowPercentage = (100 * sumPercentages) / (totalDeviceCount * 100) 
+  if (combinedVentFlowPercentage >= MINIMUM_COMBINED_VENT_FLOW_PERCENTAGE) {
+    log("Combined vent flow percentage (${combinedVentFlowPercentage}) is greather than ${MINIMUM_COMBINED_VENT_FLOW_PERCENTAGE}", 3)
+    return
+  }
+  log("Combined Vent Flow Percentage (${combinedVentFlowPercentage}) is lower than ${MINIMUM_COMBINED_VENT_FLOW_PERCENTAGE}%", 3)
+  def targetPercentSum = MINIMUM_COMBINED_VENT_FLOW_PERCENTAGE * totalDeviceCount
+  def diffPercentageSum = targetPercentSum - sumPercentages
+  log("sumPercentages=${sumPercentages}, targetPercentSum=${targetPercentSum}, diffPercentageSum=${diffPercentageSum}", 2)
+  def continueAdjustments = true
+  while (diffPercentageSum > 0 && continueAdjustments) { 
+    continueAdjustments = false     
+    atomicState.roomState.each{roomId, stateVal -> 
+      stateVal.ventIds.each {
+        def percentOpenVal = stateVal.percentOpen ? stateVal.percentOpen: 0
+        if (percentOpenVal < MAXIMUM_PERCENTAGE_OPEN) {
+          stateVal.percentOpen = percentOpenVal + INREMENT_PERCENTAGE_WHEN_REACHING_VENT_FLOW_TAGET
+          diffPercentageSum = diffPercentageSum - INREMENT_PERCENTAGE_WHEN_REACHING_VENT_FLOW_TAGET
+          continueAdjustments = true
+          log("Adjusting % open for `${stateVal.roomName}` from " + 
+            "${stateVal.percentOpen - INREMENT_PERCENTAGE_WHEN_REACHING_VENT_FLOW_TAGET}% " +
+            "to ${stateVal.percentOpen}%", 2)
+        }
+      }
+      if (atomicStateUpdateRef) {
+        atomicStateUpdateRef("roomState", roomId, stateVal)
+      }
+    }
+  }
+}
+
+def calculateOpenPercentageForAllVents(hvacMode, setpoint, longestTimeToGetToTarget) {
   def roomStates = atomicState.roomState
   roomStates.each{roomId, stateVal -> 
     stateVal.ventIds.each {
@@ -590,18 +677,42 @@ def initializeRoomStates(hvacMode) {
         def rate = hvacMode == COOLING ? stateVal.coolingRate : stateVal.heatingRate
         def percentageOpen = calculateVentOpenPercentange(setpoint, hvacMode, 
             rate, stateVal.lastStartTemp, longestTimeToGetToTarget)
-        stateVal.percentOpen = percentageOpen
         def isRoomActive = vent.currentValue("room-active") == "true"
         if (settings.thermostat1CloseInactiveRooms == true && !isRoomActive) {
           def roomName = stateVal.roomName
           log("Closing vent on inactive room (${roomName})", 3)
           percentageOpen = MINIMUM_PERCENTAGE_OPEN
         }
-        patchVent(vent, percentageOpen)
+        stateVal.percentOpen = percentageOpen
       }
     }
-    atomicState.updateMapValue("roomState", roomId, stateVal)    
+    atomicStateUpdate("roomState", roomId, stateVal)
   }  
+}
+
+def calculateVentOpenPercentange(setpoint, hvacMode, rate, startTemp, longestTimeToGetToTarget) {  
+  def percentageOpen = MAXIMUM_PERCENTAGE_OPEN
+  if (Math.abs(setpoint - startTemp) > MAX_DIFFERENCE_IN_TEMPS_C) {
+    log("Difference between start room temp (${startTemp}) and setpoint (${setpoint}) is too high", 3)
+    return percentageOpen
+  }
+  if (setpoint > 0 && rate > 0 && longestTimeToGetToTarget > 0) {
+    if (hasRoomReachedSetpoint(hvacMode, setpoint, startTemp)) {
+      log("Room is already warmer/cooler (${startTemp}) than setpoint (${setpoint})", 3)
+      percentageOpen = MINIMUM_PERCENTAGE_OPEN
+    } else {
+      percentageOpen =  Math.abs(setpoint - startTemp) / (rate * longestTimeToGetToTarget)            
+      percentageOpen = roundToNearestFifth(percentageOpen * 100)
+      if (percentageOpen < MINIMUM_PERCENTAGE_OPEN) {
+        percentageOpen = MINIMUM_PERCENTAGE_OPEN
+      } else if (percentageOpen > MAXIMUM_PERCENTAGE_OPEN) {
+        percentageOpen = MAXIMUM_PERCENTAGE_OPEN
+      }
+    }    
+  }
+  log("Open Percentange: ${Math.abs(setpoint - startTemp) / (rate * longestTimeToGetToTarget)}" + 
+      " = (${setpoint} - ${startTemp}) / ( ${rate} * ${longestTimeToGetToTarget} )", 2)
+  return percentageOpen
 }
 
 def checkActiveRooms() {
@@ -653,31 +764,6 @@ def calculateLongestMinutesToTarget(hvacMode, setpoint) {
       }    
   }
   return longestTimeToGetToTarget
-}
-
-def calculateVentOpenPercentange(setpoint, hvacMode, rate, startTemp, longestTimeToGetToTarget) {  
-  def percentageOpen = MAXIMUM_PERCENTAGE_OPEN
-  if (Math.abs(setpoint - startTemp) > MAX_DIFFERENCE_IN_TEMPS_C) {
-    log("Difference between start room temp (${startTemp}) and setpoint (${setpoint}) is too high", 3)
-    return percentageOpen
-  }
-  if (setpoint > 0 && rate > 0 && longestTimeToGetToTarget > 0) {
-    if (hasRoomReachedSetpoint(hvacMode, setpoint, startTemp)) {
-      log("Room is already warmer/cooler (${startTemp}) than setpoint (${setpoint})", 3)
-      percentageOpen = MINIMUM_PERCENTAGE_OPEN
-    } else {
-      percentageOpen =  Math.abs(setpoint - startTemp) / (rate * longestTimeToGetToTarget)            
-      percentageOpen = roundToNearestFifth(percentageOpen * 100)
-      if (percentageOpen < MINIMUM_PERCENTAGE_OPEN) {
-        percentageOpen = MINIMUM_PERCENTAGE_OPEN
-      } else if (percentageOpen > MAXIMUM_PERCENTAGE_OPEN) {
-        percentageOpen = MAXIMUM_PERCENTAGE_OPEN
-      }
-    }    
-  }
-  log("Open Percentange: ${Math.abs(setpoint - startTemp) / (rate * longestTimeToGetToTarget)}" + 
-      " = (${setpoint} - ${startTemp}) / ( ${rate} * ${longestTimeToGetToTarget} )", 2)
-  return percentageOpen
 }
 
 def calculateRoomChangeRate(roomId, stateVal, totalMinutes) {
