@@ -1,74 +1,45 @@
-# Hubitat Driver for Flair Smart Vents
+# Hubitat Integration for Flair Smart Vents
 
-This app allows you to control [Flair Smart Vents](https://flair.co/) in [Hubitat](https://hubitat.com/).
+This app provides comprehensive control of [Flair Smart Vents](https://flair.co/) through [Hubitat](https://hubitat.com/), introducing intelligent and adaptive air management for your home's heating, ventilation, and air conditioning (HVAC) system.
 
 ## Key Features
-The Hubitat integration for Flair Smart Vents provides several useful features:
 
-### Dynamic Airflow Balancing (Beta)
-The dynamic airflow balancing feature optimizes vent positions to reach and maintain the target temperature, while minimizing vent adjustments.
+### Dynamic Airflow Balancing
+Harness the power of Dynamic Airflow Balancing to refine air distribution throughout your home. Achieve optimal temperatures with fewer vent adjustments, extending the lifespan of vent motors and conserving battery life. Benefits include:
+- **Rate of temperature change calculation** in each room for precise vent adjustment.
+- **Reduced adjustments** mean less wear on vent motors and quieter operation.
+- **Minimum airflow compliance** to prevent HVAC issues from insufficient airflow, particularly useful when integrating Flair Smart Vents with traditional vents.
 
-It calculates the rate of temperature change for each room based on vent positions. It then sets the vents only as open as needed to reach the thermostat setpoint in sync.
+### Enhanced Vent Control and Combined Airflow Management
+This integration doesn't just enable remote control over each Flair vent; it smartly manages airflow to ensure your HVAC system operates efficiently without damage. Key features include:
+- **Precise control** over each vent, allowing you to set exact open levels for customized airflow.
+- **Combined airflow management** calculates total airflow from both Smart and conventional vents, ensuring the system meets minimum airflow requirements to safeguard your HVAC system from underperformance or damage.
 
-This reduces noise and wear from vent motors constantly adjusting. It also maximizes battery life by keeping the vents steady.
+### Automation Capabilities
+Unlock advanced automation with Rule Machine in Hubitat, creating rules to automatically control vent positions based on various triggers such as occupancy, time of day, or specific events. Examples include:
+- **Room Use Optimization**: Automate vents to close in unoccupied rooms, focusing climate control where it's needed.
+- **Schedule-Based Control**: Set vents to adjust based on time-of-day schedules, enhancing comfort and energy efficiency.
 
-### Granular Control
-You can set the exact vent open percentage, not just rely on Flair's auto-balancing.
+To automate room activity within Rule Machine:
+1. Navigate to "Set Variable, Mode or File" > "Run Custom Action".
+2. Choose a Flair vent device.
+3. For the command, select "setRoomActive".
+4. For the parameter, input "true" to activate a room or "false" to deactivate.
 
-Control the vents from 0-100% open via Hubitat dashboard, rules, or through Alexa/Google voice control when linked.
+## Getting Started
 
-### Remote Control
-Control your vents and view status remotely through the Hubitat mobile app.
+### Initial Setup
+1. **Install Flair Vent Driver**: In Hubitat, navigate to **Drivers Code > New Driver**, paste the contents of `hubitat-flair-vents-driver.groovy`, and save.
+2. **Install Flair App**: Access **Apps Code > New App**, copy and paste `hubitat-flair-vents-app.groovy`, click save, and then **Add User App** to install the Flair integration.
+3. **Configure API Credentials**: Request and input Flair API credentials (Client ID and Client Secret) within the Hubitat Flair app setup interface.
+4. **Discover Devices**: Initiate device discovery through the app to add your Flair vents.
 
-### Presence Integration
-Link vent automation to presence sensors. Close vents when away to save energy.
+## Using The Integration
+Control and automation are at your fingertips. Each Flair vent appears as an individual device within Hubitat. You can:
+- Set the **vent opening level** with `setLevel` (0 for closed, 100 for fully open).
+- Manage **room activity** using the `setRoomActive` command to strategically manage airflow based on room usage.
 
-### Smart Scheduling
-Use Hubitat's rules and schedules to open/close vents based on time of day or other triggers.
+## Support and Community
+Dive deeper into documentation, engage with community discussions, and receive support on the [Hubitat community forum thread](https://community.hubitat.com/t/new-control-flair-vents-with-hubitat-free-open-source-app-and-driver/132728).
 
-## Installation 
-
-To install:
-
-1. Install the Flair vent driver code:
-   - In Hubitat hub go to **Drivers Code** > **New Driver**  
-   - Copy and paste the [hubitat-flair-vents-driver.groovy](hubitat-flair-vents-driver.groovy) contents
-   - Click **Save**
-
-2. Install the Flair app code:
-   - In Hubitat hub go to **Apps Code** > **New App**
-   - Copy and paste the [hubitat-flair-vents-app.groovy](hubitat-flair-vents-app.groovy) contents
-   - Click **Save**
-   - Click **Add User App** under the app listing
-   
-3. Get credentials from Flair:
-   - Submit a request to Flair via [this form](https://forms.gle/VohiQjWNv9CAP2ASA)
-   - Flair will provide you a Client ID and Client Secret
-   - Enter these into the Hubitat Flair app
-
-4. Discover devices:
-   - In the Hubitat app, click **Discover Devices**
-   - Your Flair vents will be added automatically
-
-The vents can now be controlled through the Hubitat dashboard.
-
-## Usage
-
-Each vent will appear as a separate device in Hubitat. 
-
-You can control the vents by setting the **setLevel** attribute:
-
-- `setLevel 0` - Close vent
-- `setLevel 50` - Set vent to 50% open  
-- `setLevel 100` - Fully open vent
-
-The opening percentage will be reflected in the **level** attribute.
-This allows automating vent open/close based on routines, presence, or other triggers.
-
-You can control whether the room is active or not by setting **setRoomActive** attribute.
-
-![Flair Vent Device](hubitat-flair-vents-device.png)
-
-## Join the Discussion
-
-https://community.hubitat.com/t/new-control-flair-vents-with-hubitat-free-open-source-app-and-driver/132728
+![Flair Vent Device in Hubitat](hubitat-flair-vents-device.png)
