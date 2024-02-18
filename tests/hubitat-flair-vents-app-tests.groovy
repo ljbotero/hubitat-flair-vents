@@ -13,22 +13,27 @@ import spock.lang.Specification
 
 class Test extends Specification
 {
-    def sandbox = new HubitatAppSandbox(new File("hubitat-flair-vents-app.groovy"))
+    def appFile = new File("hubitat-flair-vents-app.groovy")    
     def validationFlags = [
             Flags.DontValidateMetadata,
             Flags.DontValidatePreferences,
             Flags.DontValidateDefinition,
-            Flags.DontRestrictGroovy
+            Flags.DontRestrictGroovy,
+            Flags.DontRequireParseMethodInDevice
           ]    
     def userSettings = ["debugLevel": 1]
-    def customizeScriptBeforeRun = {
-    }
+    def customizeScriptBeforeRun = {script->
+      script.getMetaClass().atomicStateUpdate = {
+        String arg1, String arg2, LinkedHashMap arg3 -> "" } // Method mocked here
+      }
+
 
     def "roundToNearestFifth()"() {
       setup:
         AppExecutor executorApi = Mock{
           _*getState() >> [:]
         }
+        def sandbox = new HubitatAppSandbox(appFile)
         def script = sandbox.run("api": executorApi, "validationFlags": validationFlags)
       expect:
         script.roundToNearestFifth(12.4) == 10
@@ -43,6 +48,7 @@ class Test extends Specification
         AppExecutor executorApi = Mock{
           _*getState() >> [:]
         }
+        def sandbox = new HubitatAppSandbox(appFile)
         def script = sandbox.run("api": executorApi, "validationFlags": validationFlags)
 
       expect:
@@ -64,10 +70,11 @@ class Test extends Specification
           _*getAtomicState() >> myAtomicState
 
         }
+        def sandbox = new HubitatAppSandbox(appFile)
         def script = sandbox.run("api": executorApi, 
           "validationFlags": validationFlags, 
           "customizeScriptBeforeRun": customizeScriptBeforeRun)
-        script.adjustVentOpeningsToEnsureMinimumAirflowTarget(0, null)
+        script.adjustVentOpeningsToEnsureMinimumAirflowTarget(0)
 
       expect:
         myAtomicState == [:]
@@ -80,10 +87,11 @@ class Test extends Specification
           _*getState() >> [:]
           _*getAtomicState() >> myAtomicState
         }
+        def sandbox = new HubitatAppSandbox(appFile)
         def script = sandbox.run("api": executorApi, 
           "validationFlags": validationFlags, 
           "customizeScriptBeforeRun": customizeScriptBeforeRun)
-        script.adjustVentOpeningsToEnsureMinimumAirflowTarget(0, null)
+        script.adjustVentOpeningsToEnsureMinimumAirflowTarget(0)
 
       expect:
         myAtomicState == ["roomState": ["122127":["coolingRate":0.055, "lastStartTemp":24.388, "heatingRate":0.030, "roomName":"", "ventIds":["1222bc5e"], "percentOpen":30.0]]]
@@ -98,10 +106,13 @@ class Test extends Specification
           _*getAtomicState() >> myAtomicState
           _*getLog() >> log
         }
+        def sandbox = new HubitatAppSandbox(appFile)
         def script = sandbox.run("api": executorApi, 
           "validationFlags": validationFlags, 
-          "userSettingValues": userSettings)
-        script.adjustVentOpeningsToEnsureMinimumAirflowTarget(0, null)
+          "userSettingValues": userSettings,
+          "customizeScriptBeforeRun": customizeScriptBeforeRun
+          )
+        script.adjustVentOpeningsToEnsureMinimumAirflowTarget(0)
 
       expect:
         log.records.size == 12
@@ -127,10 +138,12 @@ class Test extends Specification
           _*getAtomicState() >> myAtomicState
           _*getLog() >> log
         }
+        def sandbox = new HubitatAppSandbox(appFile)
         def script = sandbox.run("api": executorApi, 
           "validationFlags": validationFlags, 
-          "userSettingValues": userSettings)
-        script.adjustVentOpeningsToEnsureMinimumAirflowTarget(0, null)
+          "userSettingValues": userSettings,
+          "customizeScriptBeforeRun": customizeScriptBeforeRun)
+        script.adjustVentOpeningsToEnsureMinimumAirflowTarget(0)
 
       expect:
         log.records.size == 9
@@ -164,10 +177,11 @@ class Test extends Specification
           _*getAtomicState() >> myAtomicState
           _*getLog() >> log
         }
+        def sandbox = new HubitatAppSandbox(appFile)
         def script = sandbox.run("api": executorApi, 
           "validationFlags": validationFlags, 
           "userSettingValues": userSettings)
-        script.adjustVentOpeningsToEnsureMinimumAirflowTarget(4d, null)
+        script.adjustVentOpeningsToEnsureMinimumAirflowTarget(4d)
 
       expect:
         log.records[0] == new Tuple(CapturingLog.Level.debug, "Combined vent flow percentage (52.916666666666664) is greather than 30.0")

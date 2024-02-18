@@ -22,6 +22,8 @@ import groovy.transform.Field
 @Field static String CONTENT_TYPE = "application/json"
 @Field static String COOLING = "cooling"
 @Field static String HEATING = "heating"
+@Field static String PENDING_COOL = "pending cool"
+@Field static String PENDING_HEAT = "pending heat"
 @Field static String IDLE = "idle"
 @Field static Double MINIMUM_PERCENTAGE_OPEN = 5.0
 @Field static Double ROOM_RATE_CALC_MINIMUM_MINUTES = 2.5
@@ -292,7 +294,7 @@ def autheticate() {
 
 def handleAuthResponse(resp) {
   def respJson = resp.getData()
-  log("Authorized scopes: ${respJson.scope}", 1)
+  //log("Authorized scopes: ${respJson.scope}", 1)
   state.flairAccessToken = respJson.access_token
 }
 
@@ -337,7 +339,7 @@ def makeRealDevice(device) {
 }
 
 def getDeviceData(device) {
-  log("Refresh device details for ${device}", 1)
+  log("Refresh device details for ${device}", 2)
   def deviceId = device.getDeviceNetworkId()
 
   def uri = BASE_URL + '/api/vents/' + deviceId + '/current-reading'
@@ -440,7 +442,7 @@ def handleRemoteSensorGet(resp, data) {
   if (!isValidResponse(resp)) return
   def details = resp?.getJson()
   def propValue = details?.data?.first()?.attributes['occupied']
-  log("handleRemoteSensorGet: ${details}", 1)
+  //log("handleRemoteSensorGet: ${details}", 1)
   sendEvent(data.device, [name: 'room-occupied', value: propValue])
 }
 
@@ -462,7 +464,7 @@ def updateByRoomIdState(details) {
     ]
     atomicStateUpdate("roomState", roomId, roomVents)  
   }
-  log(atomicState.roomState, 1)
+  //log(atomicState.roomState, 1)
 }
 
 // ### Operations ###
@@ -482,7 +484,7 @@ def getStructureData() {
 def handleStructureGet(resp, data) {
   if (!isValidResponse(resp)) return
   def response = resp.getJson()
-  log("handleStructureGet: ${response}", 1)
+  //log("handleStructureGet: ${response}", 1)
   if (!response?.data) {
     return
   }
@@ -543,11 +545,20 @@ def handleRoomPatch(resp, data) {
 
 def thermostat1ChangeStateHandler(evt) {
   log("thermostat changed state to:${evt.value}", 2)
-  switch(evt.value) {
+  def hvacMode = evt.value
+  switch(hvacMode) {
+    case PENDING_COOL:
+      hvacMode = COOLING
     case COOLING:
+    case PENDING_HEAT:
+      hvacMode = HEATING
     case HEATING:
-      atomicState.thermostat1State = [mode: evt.value, startTime: now()]
-      runInMillis(1000, 'initializeRoomStates', [data: evt.value]) // wait a bit since setpoint is set a few ms later
+      if (atomicState.thermostat1State) {
+        log("initializeRoomStates has already been executed",3)
+        return
+      }
+      atomicState.thermostat1State = [mode: hvacMode, startTime: now()]
+      runInMillis(1000, 'initializeRoomStates', [data: hvacMode]) // wait a bit since setpoint is set a few ms later
       unschedule(checkActiveRooms)
       if (settings.thermostat1CloseInactiveRooms == true) {
         runEvery5Minutes("checkActiveRooms")
@@ -556,7 +567,7 @@ def thermostat1ChangeStateHandler(evt) {
     default:
       unschedule(checkActiveRooms)
       if (atomicState.thermostat1State)  {        
-        atomicState.thermostat1State.mode = evt.value
+        atomicState.thermostat1State.mode = hvacMode
         atomicState.thermostat1State.endTime = now()
         finalizeRoomStates()
       }
@@ -568,7 +579,11 @@ def thermostat1ChangeStateHandler(evt) {
 
 def finalizeRoomStates() {
   log("Finalizing room states", 3)
-  if (!atomicState.roomState || !atomicState.thermostat1State?.startTime) {
+  if (!atomicState.thermostat1State?.startTime) {
+    return
+  }
+  if (!atomicState.roomState) {
+    atomicState.remove('thermostat1State')
     return
   }
   def totalMinutes = (now() - atomicState.thermostat1State.startTime) / (1000 * 60)
@@ -609,7 +624,7 @@ def initializeRoomStates(hvacMode) {
   calculateOpenPercentageForAllVents(hvacMode, setpoint, longestTimeToGetToTarget)
 
   // Ensure mimimum combined vent flow across vents
-  adjustVentOpeningsToEnsureMinimumAirflowTarget(settings.thermostat1AdditionalStandardVents, atomicStateUpdate)
+  adjustVentOpeningsToEnsureMinimumAirflowTarget(settings.thermostat1AdditionalStandardVents)
 
   // Apply open percentage across all vents
   atomicState.roomState.each{roomId, stateVal -> 
@@ -622,7 +637,7 @@ def initializeRoomStates(hvacMode) {
   }  
 }
 
-def adjustVentOpeningsToEnsureMinimumAirflowTarget(additionalStandardVents, atomicStateUpdateRef = atomicStateUpdate) {
+def adjustVentOpeningsToEnsureMinimumAirflowTarget(additionalStandardVents) {
   def totalDeviceCount = additionalStandardVents > 0 ? additionalStandardVents: 0
   def sumPercentages = totalDeviceCount * 100 // Assuming all standard vents are at 100%
   atomicState.roomState.each{roomId, stateVal -> 
@@ -661,9 +676,7 @@ def adjustVentOpeningsToEnsureMinimumAirflowTarget(additionalStandardVents, atom
             "to ${stateVal.percentOpen}%", 2)
         }
       }
-      if (atomicStateUpdateRef) {
-        atomicStateUpdateRef("roomState", roomId, stateVal)
-      }
+      atomicStateUpdate("roomState", roomId, stateVal)
     }
   }
 }
@@ -741,7 +754,7 @@ def calculateLongestMinutesToTarget(hvacMode, setpoint) {
   def longestTimeToGetToTarget = 0
   def roomStates = atomicState.roomState
   roomStates.each{ roomId, stateVal -> 
-      log("atomicState.roomState: roomId=${roomId}, roomState=${stateVal}", 1)
+      log("atomicState.roomState: roomId=${roomId}, roomState=${stateVal}", 2)
       stateVal.ventIds.each {
         def vent = getChildDevice(it)  
         if (vent) {
