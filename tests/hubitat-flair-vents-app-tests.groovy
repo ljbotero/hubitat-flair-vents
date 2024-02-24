@@ -13,7 +13,7 @@ import spock.lang.Specification
 
 class Test extends Specification
 {
-    def appFile = new File("hubitat-flair-vents-app.groovy")    
+    def appFile = new File("src/hubitat-flair-vents-app.groovy")    
     def validationFlags = [
             Flags.DontValidateMetadata,
             Flags.DontValidatePreferences,
@@ -185,6 +185,27 @@ class Test extends Specification
 
       expect:
         log.records[0] == new Tuple(CapturingLog.Level.debug, "Combined vent flow percentage (52.916666666666664) is greather than 30.0")
+    }
+
+    def "calculateRoomChangeRate()"() {
+      setup:
+        final def log = new CapturingLog()
+        AppExecutor executorApi = Mock{
+          _*getState() >> [:]
+          _*getLog() >> log
+        }
+        def sandbox = new HubitatAppSandbox(appFile)
+        def script = sandbox.run("api": executorApi, 
+          "validationFlags": validationFlags,
+          "userSettingValues": userSettings)
+      expect:
+        script.calculateRoomChangeRate(0, 0, 0, 4) == -1
+        log.records[0] == new Tuple(CapturingLog.Level.debug, "Vent was opened less than 5.0% (4), therefore it's being excluded") 
+        script.calculateRoomChangeRate(30, 20, 1.0, 100) == -1
+        log.records[1] == new Tuple(CapturingLog.Level.debug, "Change rate (10.0) is greater than 2.0, therefore it's being excluded") 
+        script.calculateRoomChangeRate(20.1, 20, 60.0, 100) == -1
+        log.records[2] == new Tuple(CapturingLog.Level.debug, "Change rate (0.0016666666666666668) is lower than 0.0017, therefore it's being excluded") 
+        script.calculateRoomChangeRate(21, 19, 5.2, 70) == 0.5494505494505494
     }
 
 }

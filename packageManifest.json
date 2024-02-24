@@ -11,7 +11,7 @@
       "id": "9c841359-115b-4fdd-8c0d-f054a5140c36",
       "name": "Flair Vents",
       "namespace": "",
-      "location": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/hubitat-flair-vents-app.groovy",
+      "location": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/src/hubitat-flair-vents-app.groovy",
       "required": true,
       "oauth": false,
       "primary": false
@@ -22,7 +22,7 @@
       "id": "f13f6c09-59f6-4f68-9219-21b9fc9170a9",
       "name": "Flair vents",
       "namespace": "bot.flair",
-      "location": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/hubitat-flair-vents-driver.groovy",
+      "location": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/src/hubitat-flair-vents-driver.groovy",
       "required": true
     }
   ]
