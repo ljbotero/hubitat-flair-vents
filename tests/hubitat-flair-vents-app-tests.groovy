@@ -45,21 +45,28 @@ class Test extends Specification
 
     def "calculateVentOpenPercentange()"() {
       setup:
+        final def log = new CapturingLog()
         AppExecutor executorApi = Mock{
           _*getState() >> [:]
+          _*getLog() >> log
         }
         def sandbox = new HubitatAppSandbox(appFile)
-        def script = sandbox.run("api": executorApi, "validationFlags": validationFlags)
+        def script = sandbox.run("api": executorApi, 
+          "validationFlags": validationFlags,
+          "userSettingValues": userSettings)
 
       expect:
-        script.calculateVentOpenPercentange(70, "heating", 0.698, 62, 12.6) == 90
-        script.calculateVentOpenPercentange(70, "heating", 0.715, 65, 12.6) == 55
-        script.calculateVentOpenPercentange(70, "heating", 0.550, 61, 20) == 80
+        script.calculateVentOpenPercentange(70, "heating", 0.698, 62, 12.6) == 75
+        log.records[0] == new Tuple(CapturingLog.Level.debug, "percentageOpen: (0.7628231412148794)") 
+        script.calculateVentOpenPercentange(70, "heating", 0.715, 65, 12.6) == 25
+        script.calculateVentOpenPercentange(70, "heating", 0.550, 61, 20) == 60
         script.calculateVentOpenPercentange(82, "cooling", 0.850, 98, 20) == 100
-        script.calculateVentOpenPercentange(82, "cooling", 0.950, 84, 20) == 10
-        script.calculateVentOpenPercentange(82, "cooling", 0.950, 85, 20) == 15
+        script.calculateVentOpenPercentange(82, "cooling", 0.950, 84, 20) == 5
+        script.calculateVentOpenPercentange(82, "cooling", 0.950, 85, 20) == 10
         script.calculateVentOpenPercentange(82, "cooling", 2.5, 86, 90) == 5
         script.calculateVentOpenPercentange(82, "cooling", 2.5, 87, 900) == 5
+        script.calculateVentOpenPercentange(85, "cooling", 0.3846153846, 87, 10) == 25
+        script.calculateVentOpenPercentange(85, "cooling", 0, 87, 10) == 100
     }
 
    def "adjustVentOpeningsToEnsureMinimumAirflowTarget() - empty state"() {
@@ -205,8 +212,8 @@ class Test extends Specification
         log.records[1] == new Tuple(CapturingLog.Level.debug, "Change rate (10.0) is greater than 2.0, therefore it's being excluded") 
         script.calculateRoomChangeRate(20.1, 20, 60.0, 100) == -1
         log.records[2] == new Tuple(CapturingLog.Level.debug, "Change rate (0.0016666666666666668) is lower than 0.0017, therefore it's being excluded") 
-        script.calculateRoomChangeRate(21, 20.76849038, 5, 25) == 0.08738087726271954 
-        script.calculateRoomChangeRate(21, 19, 5.2, 70) == 0.4375372503191035 
+        script.calculateRoomChangeRate(21, 20.76849038, 5, 25) == 0.08618423052099167 
+        script.calculateRoomChangeRate(21, 19, 5.2, 70) == 0.4365970786870574
     }
 
 }

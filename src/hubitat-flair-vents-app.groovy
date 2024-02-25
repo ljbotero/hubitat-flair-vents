@@ -37,6 +37,8 @@ import groovy.transform.Field
 @Field static Double INREMENT_PERCENTAGE_WHEN_REACHING_VENT_FLOW_TAGET = 2.5
 @Field static Integer MAX_NUMBER_OF_STANDARD_VENTS = 15
 @Field static Integer HTTP_TIMEOUT_SECS = 5
+@Field static Double RATE_FUNCTION_BASE_CONST = 0.05
+@Field static Double RATE_FUNCTION_EXP_CONST = 2.8
 
 definition(
         name: 'Flair Vents',
@@ -764,7 +766,12 @@ def calculateVentOpenPercentange(setpoint, hvacMode, rate, startTemp, longestTim
       log("Room is already warmer/cooler (${startTemp}) than setpoint (${setpoint})", 3)
       percentageOpen = MINIMUM_PERCENTAGE_OPEN
     } else {
-      percentageOpen =  Math.abs(setpoint - startTemp) / (rate * longestTimeToGetToTarget)            
+      
+      double A = RATE_FUNCTION_BASE_CONST
+      double r = Math.abs(setpoint - startTemp) / longestTimeToGetToTarget
+      percentageOpen = A * Math.exp((-r*Math.log(A))/rate)
+      log("percentageOpen: (${percentageOpen})", 1)
+
       percentageOpen = roundToNearestFifth(percentageOpen * 100)
       if (percentageOpen < MINIMUM_PERCENTAGE_OPEN) {
         percentageOpen = MINIMUM_PERCENTAGE_OPEN
@@ -773,8 +780,6 @@ def calculateVentOpenPercentange(setpoint, hvacMode, rate, startTemp, longestTim
       }
     }    
   }
-  log("Open Percentange: ${Math.abs(setpoint - startTemp) / (rate * longestTimeToGetToTarget)}" + 
-      " = (${setpoint} - ${startTemp}) / ( ${rate} * ${longestTimeToGetToTarget} )", 2)
   return percentageOpen
 }
 
@@ -833,8 +838,8 @@ def calculateRoomChangeRate(currentTemp, lastStartTemp, totalMinutes, percentOpe
     return -1
   }
 
-  double A = 0.0524
-  double B = 2.75
+  double A = RATE_FUNCTION_BASE_CONST
+  double B = RATE_FUNCTION_EXP_CONST
   double P = percentOpen / 100
 
   double equivalentExpRate = (Math.log(P/A))/B  

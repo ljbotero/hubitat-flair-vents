@@ -1,7 +1,7 @@
 {
   "packageName": "Flair Vents",
   "author": "Jaime Botero",
-  "version": "0.2",
+  "version": "0.3",
   "minimumHEVersion": "0.0.1",
   "documentationLink": "https://github.com/ljbotero/hubitat-flair-vents/blob/main/README.md",
   "communityLink": "https://community.hubitat.com/t/new-control-flair-vents-with-hubitat-free-open-source-app-and-driver/132728",
