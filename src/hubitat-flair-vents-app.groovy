@@ -610,7 +610,7 @@ def thermostat1ChangeStateHandler(evt) {
             atomicState.thermostat1State.endTime, 
             atomicState.thermostat1State.mode)
         }
-        atomicStateUpdate("thermostat1State", "mode", hvacMode)
+        atomicState.remove('thermostat1State')
       }
       break
   }
@@ -643,8 +643,7 @@ def finalizeRoomStates(roomStates, startTime, endTime, hvacMode) {
       // Collect metric to determine steep function
       atomicStateUpdate("roomState", roomId, stateVal)
     }
-  }
-  atomicState.remove('thermostat1State')
+  }  
 }
 
 def initializeRoomStates(hvacMode) {
@@ -834,15 +833,21 @@ def calculateRoomChangeRate(currentTemp, lastStartTemp, totalMinutes, percentOpe
     return -1
   }
 
-  double percentInpercent = percentOpen / 100.0d
-  double rateAt100 = rate / percentInpercent
+  double A = 0.0524
+  double B = 2.75
+  double P = percentOpen / 100
 
-  if (rateAt100 > MAX_TEMP_CHANGE_RATE_C) {
-    log("Change rate (${rateAt100}) is greater than ${MAX_TEMP_CHANGE_RATE_C}, therefore it's being excluded", 3)
+  double equivalentExpRate = (Math.log(P/A))/B  
+  double approxMaxRate = (Math.log(1/A))/B
+  double approxEquivMaxRate = (approxMaxRate * rate) / equivalentExpRate
+
+  if (approxEquivMaxRate > MAX_TEMP_CHANGE_RATE_C) {
+    log("Change rate (${approxEquivMaxRate}) is greater than ${MAX_TEMP_CHANGE_RATE_C}, therefore it's being excluded", 3)
     return -1
-  } else if (rateAt100 < MIN_TEMP_CHANGE_RATE_C) {
-    log("Change rate (${rateAt100}) is lower than ${MIN_TEMP_CHANGE_RATE_C}, therefore it's being excluded", 3)
+  } else if (approxEquivMaxRate < MIN_TEMP_CHANGE_RATE_C) {
+    log("Change rate (${approxEquivMaxRate}) is lower than ${MIN_TEMP_CHANGE_RATE_C}, therefore it's being excluded", 3)
     return -1
   }   
-  return rateAt100
+  return approxEquivMaxRate
+}
 }

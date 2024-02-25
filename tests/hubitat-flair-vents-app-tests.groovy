@@ -20,7 +20,7 @@ class Test extends Specification
             Flags.DontValidateDefinition,
             Flags.DontRestrictGroovy,
             Flags.DontRequireParseMethodInDevice
-          ]    
+          ]
     def userSettings = ["debugLevel": 1]
     def customizeScriptBeforeRun = {script->
       script.getMetaClass().atomicStateUpdate = {
@@ -205,7 +205,8 @@ class Test extends Specification
         log.records[1] == new Tuple(CapturingLog.Level.debug, "Change rate (10.0) is greater than 2.0, therefore it's being excluded") 
         script.calculateRoomChangeRate(20.1, 20, 60.0, 100) == -1
         log.records[2] == new Tuple(CapturingLog.Level.debug, "Change rate (0.0016666666666666668) is lower than 0.0017, therefore it's being excluded") 
-        script.calculateRoomChangeRate(21, 19, 5.2, 70) == 0.5494505494505494
+        script.calculateRoomChangeRate(21, 20.76849038, 5, 25) == 0.08738087726271954 
+        script.calculateRoomChangeRate(21, 19, 5.2, 70) == 0.4375372503191035 
     }
 
 }
