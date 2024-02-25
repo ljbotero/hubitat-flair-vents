@@ -158,6 +158,16 @@ def initialize(evt) {
 }
 
 // Helpers
+private openAllVents(roomStates, percentOpen) {
+  roomStates.each{ roomId, stateVal -> 
+      stateVal.ventIds.each {
+        def vent = getChildDevice(it)  
+        if (!vent) return
+        patchVent(vent, percentOpen)
+      }
+  }
+}
+
 private getPercentageOpen(ventIds) {
   def percentOpen = 0
   if (!ventIds || ventIds.size() == 0) return percentOpen
@@ -592,7 +602,7 @@ def thermostat1ChangeStateHandler(evt) {
     default:
       unschedule(checkActiveRooms)
       if (atomicState.thermostat1State)  {        
-        if (!atomicState.thermostat1State?.startTime) { 
+        if (atomicState.thermostat1State?.startTime) { 
           atomicStateUpdate("thermostat1State", "endTime", now())
           finalizeRoomStates(
             atomicState.roomState,
@@ -654,7 +664,8 @@ def initializeRoomStates(hvacMode) {
   // Get longest time to reach to target temp
   def longestTimeToGetToTarget = calculateLongestMinutesToTarget(hvacMode, setpoint)
   if (longestTimeToGetToTarget <= 0) {
-    log("Keeping vents unchanged (setpoint: ${setpoint}, longestTimeToGetToTarget: ${longestTimeToGetToTarget})", 3)
+    log("Openning all vents (setpoint: ${setpoint})", 3)
+    openAllVents(atomicState.roomState, MAXIMUM_PERCENTAGE_OPEN)
     return
   }
   log("Initializing room states - setpoint: ${setpoint}, longestTimeToGetToTarget: ${longestTimeToGetToTarget}", 3)
@@ -779,10 +790,6 @@ def checkActiveRooms() {
       def calculatedPercentOpen = stateVal.percentOpen
       String roomName = stateVal.roomName
       if (settings.thermostat1CloseInactiveRooms == true && 
-        isRoomActive && calculatedPercentOpen > currPercentOpen &&  dabEnabled)  {
-        log("Opening vent on active room (${roomName})", 3)
-        patchVent(vent, calculatedPercentOpen)
-      } else if (settings.thermostat1CloseInactiveRooms == true && 
         !isRoomActive && currPercentOpen > MINIMUM_PERCENTAGE_OPEN) {
         log("Closing vent on inactive room (${roomName})", 3)
         patchVent(vent, MINIMUM_PERCENTAGE_OPEN)
