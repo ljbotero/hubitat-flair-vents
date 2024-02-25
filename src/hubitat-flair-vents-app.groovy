@@ -329,12 +329,6 @@ def appButtonHandler(btn) {
     case 'discoverDevices':
       discover()
       break
-    case 'testStuff':
-      //atomicState.remove('roomState')
-      atomicState.remove('roomRateHistory')
-      atomicState.remove('test1')
-      atomicState.remove('testing')
-      break
   }
 }
 
@@ -576,18 +570,20 @@ def handleRoomPatch(resp, data) {
 def thermostat1ChangeStateHandler(evt) {
   log("thermostat changed state to:${evt.value}", 3)
   def hvacMode = evt.value
+  if (hvacMode == PENDING_COOL) {
+    hvacMode = COOLING
+  } else if (hvacMode == PENDING_HEAT) {
+    hvacMode = HEATING
+  }
   switch(hvacMode) {
-    case PENDING_COOL:
-      hvacMode = COOLING
     case COOLING:
-    case PENDING_HEAT:
-      hvacMode = HEATING
     case HEATING:
       if (atomicState.thermostat1State) {
         log("initializeRoomStates has already been executed (${evt.value})",3)
         return
       }
-      atomicState.thermostat1State = [mode: hvacMode, startTime: now()]
+      atomicStateUpdate("thermostat1State", "mode", hvacMode)
+      atomicStateUpdate("thermostat1State", "startTime", now())
       runInMillis(1000, 'initializeRoomStates', [data: hvacMode]) // wait a bit since setpoint is set a few ms later
       unschedule(checkActiveRooms)
       if (settings.thermostat1CloseInactiveRooms == true) {
@@ -598,14 +594,14 @@ def thermostat1ChangeStateHandler(evt) {
       unschedule(checkActiveRooms)
       if (atomicState.thermostat1State)  {        
         if (!atomicState.thermostat1State?.startTime) { 
-          atomicState.thermostat1State.endTime = now()
+          atomicStateUpdate("thermostat1State", "endTime", now())
           finalizeRoomStates(
             atomicState.roomState,
             atomicState.thermostat1State.startTime,
             atomicState.thermostat1State.endTime, 
             atomicState.thermostat1State.mode)
-          }
-        atomicState.thermostat1State.mode = hvacMode
+        }
+        atomicStateUpdate("thermostat1State", "mode", hvacMode)
       }
       break
   }
@@ -636,7 +632,6 @@ def finalizeRoomStates(roomStates, startTime, endTime, hvacMode) {
         return
       }
       // Collect metric to determine steep function
-      addToRoomHistory(roomId, rate, percentOpen)
       atomicStateUpdate("roomState", roomId, stateVal)
     }
   }
@@ -844,15 +839,4 @@ def calculateRoomChangeRate(currentTemp, lastStartTemp, totalMinutes, percentOpe
     return -1
   }   
   return rateAt100
-}
-
-private addToRoomHistory(roomId, rate, percentOpen) {
-  log("addToRoomHistory [${roomId}: [rate: ${rate}, percentOpen: ${percentOpen}]]", 3)
-  def thisRoomHistory = atomicState.roomRateHistory?."${roomId}"
-  if (!thisRoomHistory) {
-    atomicStateUpdate("roomRateHistory", roomId, [[rate: rate, percentOpen: percentOpen]])
-  } else {
-    thisRoomHistory.add([rate: rate, percentOpen: percentOpen])
-    atomicStateUpdate("roomRateHistory", roomId, thisRoomHistory)
-  }
 }
