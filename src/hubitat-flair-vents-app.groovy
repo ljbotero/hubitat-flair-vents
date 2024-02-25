@@ -850,4 +850,3 @@ def calculateRoomChangeRate(currentTemp, lastStartTemp, totalMinutes, percentOpe
   }   
   return approxEquivMaxRate
 }
-}
