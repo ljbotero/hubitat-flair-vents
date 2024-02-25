@@ -117,7 +117,6 @@ def mainPage() {
         }
         section{
           input name: "debugLevel", type: "enum", title: "Choose debug level", defaultValue: 0, options: [0:"None",1:"Level 1 (All)", 2:"Level 2", 3:"Level 3"], submitOnChange: true
-          input 'testStuff', 'button', title: 'Test', submitOnChange: true
         }
   }
 }
