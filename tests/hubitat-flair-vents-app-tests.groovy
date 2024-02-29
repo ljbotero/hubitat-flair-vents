@@ -3,217 +3,320 @@ package bot.flair
 // Run `gradle build` to test
 // More info @ https://github.com/biocomp/hubitat_ci/blob/master/docs/how_to_test.md
 
-import me.biocomp.hubitat_ci.api.app_api.AppExecutor
-import me.biocomp.hubitat_ci.api.common_api.InstalledAppWrapper
-import me.biocomp.hubitat_ci.api.common_api.Log
-import me.biocomp.hubitat_ci.app.HubitatAppSandbox
+import me.biocomp.hubitat_ci.util.CapturingLog.Level
 import me.biocomp.hubitat_ci.util.CapturingLog
+import me.biocomp.hubitat_ci.api.app_api.AppExecutor
+import me.biocomp.hubitat_ci.app.HubitatAppSandbox
 import me.biocomp.hubitat_ci.validation.Flags
 import spock.lang.Specification
 
-class Test extends Specification
-{
-    def appFile = new File("src/hubitat-flair-vents-app.groovy")    
-    def validationFlags = [
+class Test extends Specification {
+
+  private static final File APP_FILE = new File('src/hubitat-flair-vents-app.groovy')
+  private static final List VALIDATION_FLAGS = [
             Flags.DontValidateMetadata,
             Flags.DontValidatePreferences,
             Flags.DontValidateDefinition,
             Flags.DontRestrictGroovy,
             Flags.DontRequireParseMethodInDevice
           ]
-    def userSettings = ["debugLevel": 1]
-    def customizeScriptBeforeRun = {script->
-      script.getMetaClass().atomicStateUpdate = {
-        String arg1, String arg2, LinkedHashMap arg3 -> "" } // Method mocked here
-      }
+  private static final AbstractMap USER_SETTINGS = ['debugLevel': 1, 'thermostat1CloseInactiveRooms': true]
 
+  private static final Closure BEFORE_RUN_SCRIPT = { script ->
+    script.getMetaClass().atomicStateUpdate = {
+        String arg1, String arg2, AbstractMap arg3 -> '' }
+  }
 
-    def "roundToNearestFifth()"() {
-      setup:
-        AppExecutor executorApi = Mock{
-          _*getState() >> [:]
-        }
-        def sandbox = new HubitatAppSandbox(appFile)
-        def script = sandbox.run("api": executorApi, "validationFlags": validationFlags)
-      expect:
-        script.roundToNearestFifth(12.4) == 10
-        script.roundToNearestFifth(12.5) == 15
-        script.roundToNearestFifth(12.6) == 15
-        script.roundToNearestFifth(95.6) == 95
-        script.roundToNearestFifth(97.5) == 100
+  def "roundToNearestFifth()"() {
+    setup:
+    AppExecutor executorApi = Mock {
+      _   * getState() >> [:]
     }
+    def sandbox = new HubitatAppSandbox(APP_FILE)
+    def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
 
-    def "calculateVentOpenPercentange()"() {
-      setup:
-        final def log = new CapturingLog()
-        AppExecutor executorApi = Mock{
-          _*getState() >> [:]
-          _*getLog() >> log
-        }
-        def sandbox = new HubitatAppSandbox(appFile)
-        def script = sandbox.run("api": executorApi, 
-          "validationFlags": validationFlags,
-          "userSettingValues": userSettings)
+    expect:
+    script.roundToNearestFifth(12.4) == 10
+    script.roundToNearestFifth(12.5) == 15
+    script.roundToNearestFifth(12.6) == 15
+    script.roundToNearestFifth(95.6) == 95
+    script.roundToNearestFifth(97.5) == 100
+  }
 
-      expect:
-        script.calculateVentOpenPercentange(70, "heating", 0.698, 62, 12.6) == 75
-        log.records[0] == new Tuple(CapturingLog.Level.debug, "percentageOpen: (0.7628231412148794)") 
-        script.calculateVentOpenPercentange(70, "heating", 0.715, 65, 12.6) == 25
-        script.calculateVentOpenPercentange(70, "heating", 0.550, 61, 20) == 60
-        script.calculateVentOpenPercentange(82, "cooling", 0.850, 98, 20) == 100
-        script.calculateVentOpenPercentange(82, "cooling", 0.950, 84, 20) == 5
-        script.calculateVentOpenPercentange(82, "cooling", 0.950, 85, 20) == 10
-        script.calculateVentOpenPercentange(82, "cooling", 2.5, 86, 90) == 5
-        script.calculateVentOpenPercentange(82, "cooling", 2.5, 87, 900) == 5
-        script.calculateVentOpenPercentange(85, "cooling", 0.3846153846, 87, 10) == 25
-        script.calculateVentOpenPercentange(85, "cooling", 0, 87, 10) == 100
+  def "calculateOpenPercentageForAllVents"() {
+    setup:
+    final log = new CapturingLog()
+    AppExecutor executorApi = Mock {
+      _ * getState() >> [:]
+      _ * getLog() >> log
     }
+    def sandbox = new HubitatAppSandbox(APP_FILE)
+    def script = sandbox.run('api': executorApi,
+      'validationFlags': VALIDATION_FLAGS,
+      'userSettingValues': USER_SETTINGS)
+    def rateAndTempPerVentId = [
+      '1222bc5e': [rate:0.123, temp:26.444, active:true],
+      '00f65b12':[rate:0.070, temp:25.784, active:true],
+      'd3f411b2':[rate:0.035, temp:26.277, active:true],
+      '472379e6':[rate:0.318, temp:24.892, active:true],
+      '6ee4c352':[rate:0.318, temp:24.892, active:true],
+      'c5e770b6':[rate:0.009, temp:23.666, active:true],
+      'e522531c':[rate:0.061, temp:25.444, active:false],
+      'acb0b95d':[rate:0.432, temp:25.944, active:true]
+    ]
 
-   def "adjustVentOpeningsToEnsureMinimumAirflowTarget() - empty state"() {
-      setup:
-        def myAtomicState = [:]
-         AppExecutor executorApi = Mock{
-          _*getState() >> [:]
-          _*getAtomicState() >> myAtomicState
+    expect:
+    script.calculateOpenPercentageForAllVents(rateAndTempPerVentId, 'cooling', 23.666, 60) == [
+      '1222bc5e':1.654,
+      '00f65b12':3.835,
+      'd3f411b2':100.0,
+      '472379e6':0.212,
+      '6ee4c352':0.212,
+      'c5e770b6':0.0,
+      'e522531c':0.0,
+      'acb0b95d':0.248
+    ]
+  }
 
-        }
-        def sandbox = new HubitatAppSandbox(appFile)
-        def script = sandbox.run("api": executorApi, 
-          "validationFlags": validationFlags, 
-          "customizeScriptBeforeRun": customizeScriptBeforeRun)
-        script.adjustVentOpeningsToEnsureMinimumAirflowTarget(0)
-
-      expect:
-        myAtomicState == [:]
+  def "calculateLongestMinutesToTarget"() {
+    setup:
+    final log = new CapturingLog()
+    AppExecutor executorApi = Mock {
+      _ * getState() >> [:]
+      _ * getLog() >> log
     }
+    def sandbox = new HubitatAppSandbox(APP_FILE)
+    def script = sandbox.run('api': executorApi,
+      'validationFlags': VALIDATION_FLAGS,
+      'userSettingValues': USER_SETTINGS)
+    def rateAndTempPerVentId = [
+      '1222bc5e': [rate:0.123, temp:26.444, active:true, name: '1'],
+      '00f65b12':[rate:0.070, temp:25.784, active:true, name: '2'],
+      'd3f411b2':[rate:0.035, temp:26.277, active:true, name: '3'],
+      '472379e6':[rate:0.318, temp:24.892, active:true, name: '4'],
+      '6ee4c352':[rate:0.318, temp:24.892, active:true, name: '5'],
+      'c5e770b6':[rate:0.009, temp:23.666, active:true, name: '6'],
+      'e522531c':[rate:0.061, temp:25.444, active:false, name: '7'],
+      'acb0b95d':[rate:0.432, temp:25.944, active:true, name: '8']
+    ]
 
-    def "adjustVentOpeningsToEnsureMinimumAirflowTarget() - no percent open set"() {
-      setup:
-        def myAtomicState = ["roomState": ["122127":["coolingRate":0.055, "lastStartTemp":24.388, "heatingRate":0.030, "roomName":"", "ventIds":["1222bc5e"]]]]
-         AppExecutor executorApi = Mock{
-          _*getState() >> [:]
-          _*getAtomicState() >> myAtomicState
-        }
-        def sandbox = new HubitatAppSandbox(appFile)
-        def script = sandbox.run("api": executorApi, 
-          "validationFlags": validationFlags, 
-          "customizeScriptBeforeRun": customizeScriptBeforeRun)
-        script.adjustVentOpeningsToEnsureMinimumAirflowTarget(0)
+    expect:
+    script.calculateLongestMinutesToTarget(rateAndTempPerVentId, 'cooling', 23.666, 72) == 72
+    log.records[2] == new Tuple(Level.warn, "Room '3' is taking 74.6 minutes, " +
+      'which is longer than the limit of 72 minutes')
+  }
 
-      expect:
-        myAtomicState == ["roomState": ["122127":["coolingRate":0.055, "lastStartTemp":24.388, "heatingRate":0.030, "roomName":"", "ventIds":["1222bc5e"], "percentOpen":30.0]]]
+  def "calculateVentOpenPercentange"() {
+    setup:
+    final log = new CapturingLog()
+    AppExecutor executorApi = Mock {
+      _ * getState() >> [:]
+      _ * getLog() >> log
     }
+    def sandbox = new HubitatAppSandbox(APP_FILE)
+    def script = sandbox.run('api': executorApi,
+          'validationFlags': VALIDATION_FLAGS,
+          'userSettingValues': USER_SETTINGS)
 
-    def "adjustVentOpeningsToEnsureMinimumAirflowTarget() - single vent at 5%"() {
-      setup:
-        def myAtomicState = ["roomState": ["122127":["coolingRate":0.055, "lastStartTemp":24.388, "heatingRate":0.030, "roomName":"", "ventIds":["1222bc5e"], "percentOpen": 5.0]]]
-         final def log = new CapturingLog()
-         AppExecutor executorApi = Mock{
-          _*getState() >> [:]
-          _*getAtomicState() >> myAtomicState
-          _*getLog() >> log
-        }
-        def sandbox = new HubitatAppSandbox(appFile)
-        def script = sandbox.run("api": executorApi, 
-          "validationFlags": validationFlags, 
-          "userSettingValues": userSettings,
-          "customizeScriptBeforeRun": customizeScriptBeforeRun
-          )
-        script.adjustVentOpeningsToEnsureMinimumAirflowTarget(0)
+    expect:
+    def expectedVals = [5.354, 30.238, 0.0, 0.278, 0.393, 0.156, 0.141, 4.276, 100.0]
+    def retVals = [
+      script.calculateVentOpenPercentange(65, 70, 'heating', 0.715, 12.6),
+      script.calculateVentOpenPercentange(61, 70, 'heating', 0.550, 20),
+      script.calculateVentOpenPercentange(98, 82, 'cooling', 0.850, 20),
+      script.calculateVentOpenPercentange(84, 82, 'cooling', 0.950, 20),
+      script.calculateVentOpenPercentange(85, 82, 'cooling', 0.950, 20),
+      script.calculateVentOpenPercentange(86, 82, 'cooling', 2.5, 90),
+      script.calculateVentOpenPercentange(87, 82, 'cooling', 2.5, 900),
+      script.calculateVentOpenPercentange(87, 85, 'cooling', 0.384, 10),
+      script.calculateVentOpenPercentange(87, 85, 'cooling', 0, 10)
+    ]
+    expectedVals == retVals
+  }
 
-      expect:
-        log.records.size == 12
-        log.records[0] == new Tuple(CapturingLog.Level.debug, "Combined Vent Flow Percentage (5.0) is lower than 30.0%")
-        log.records[11] == new Tuple(CapturingLog.Level.debug, "Adjusting % open for `` from 27.5% to 30.0%")
-        myAtomicState == ["roomState": ["122127":["coolingRate":0.055, "lastStartTemp":24.388, "heatingRate":0.030, "roomName":"", "ventIds":["1222bc5e"], "percentOpen": 30.0]]]
+  def "calculateVentOpenPercentange() - Already reached"() {
+    setup:
+    final log = new CapturingLog()
+    AppExecutor executorApi = Mock {
+      _ * getState() >> [:]
+      _ * getLog() >> log
     }
+    def sandbox = new HubitatAppSandbox(APP_FILE)
+    def script = sandbox.run('api': executorApi,
+          'validationFlags': VALIDATION_FLAGS,
+          'userSettingValues': USER_SETTINGS)
 
-    def "adjustVentOpeningsToEnsureMinimumAirflowTarget() - multiple vents"() {
-      setup:
-        def myAtomicState = ["roomState": [
-          "122127":["coolingRate":0.055, "lastStartTemp":24.388, "heatingRate":0.030, "roomName":"", "ventIds":["1222bc5e"], "percentOpen": 10], 
-          "122129":["coolingRate":0.035, "lastStartTemp":23.194, "heatingRate":0.026, "roomName":"", "ventIds":["00f65b12"], "percentOpen": 5], 
-          "122128":["coolingRate":0.064, "lastStartTemp":23.722, "heatingRate":0.079, "roomName":"", "ventIds":["d3f411b2"], "percentOpen": 15], 
-          "122133":["coolingRate":0.067, "lastStartTemp":22.446, "heatingRate":0.067, "roomName":"", "ventIds":["472379e6", "6ee4c352"], "percentOpen": 25], 
-          "129424":["coolingRate":0.079, "lastStartTemp":21.666, "heatingRate":0.064, "roomName":"", "ventIds":["c5e770b6"], "percentOpen": 100], 
-          "122132":["coolingRate":0.026, "lastStartTemp":22.777, "heatingRate":0.035, "roomName":"", "ventIds":["e522531c"], "percentOpen": 20], 
-          "122131":["coolingRate":0.030, "lastStartTemp":23.500, "heatingRate":0.055, "roomName":"", "ventIds":["acb0b95d"], "percentOpen": 35]
-        ]]
-        final def log = new CapturingLog()
-         AppExecutor executorApi = Mock{
-          _*getState() >> [:]
-          _*getAtomicState() >> myAtomicState
-          _*getLog() >> log
-        }
-        def sandbox = new HubitatAppSandbox(appFile)
-        def script = sandbox.run("api": executorApi, 
-          "validationFlags": validationFlags, 
-          "userSettingValues": userSettings,
-          "customizeScriptBeforeRun": customizeScriptBeforeRun)
-        script.adjustVentOpeningsToEnsureMinimumAirflowTarget(0)
+    expect:
+    script.calculateVentOpenPercentange(75, 70, 'heating', 0.1, 1) == 0
+    log.records[0] == new Tuple(Level.debug, 'Room is already warmer/cooler (75) than setpoint (70)')
+    script.calculateVentOpenPercentange(75, 80, 'cooling', 0.1, 1) == 0
+    log.records[1] == new Tuple(Level.debug, 'Room is already warmer/cooler (75) than setpoint (80)')
+  }
 
-      expect:
-        log.records.size == 9
-        log.records[0] == new Tuple(CapturingLog.Level.debug, "Combined Vent Flow Percentage (29.375) is lower than 30.0%")
-        log.records[8] == new Tuple(CapturingLog.Level.debug, "Adjusting % open for `` from 35.0% to 37.5%")
-        myAtomicState == ["roomState":[
-            "122127":["coolingRate":0.055, "lastStartTemp":24.388, "heatingRate":0.030, "roomName":"", "ventIds":["1222bc5e"], "percentOpen":12.5], 
-            "122129":["coolingRate":0.035, "lastStartTemp":23.194, "heatingRate":0.026, "roomName":"", "ventIds":["00f65b12"], "percentOpen":7.5], 
-            "122128":["coolingRate":0.064, "lastStartTemp":23.722, "heatingRate":0.079, "roomName":"", "ventIds":["d3f411b2"], "percentOpen":17.5], 
-            "122133":["coolingRate":0.067, "lastStartTemp":22.446, "heatingRate":0.067, "roomName":"", "ventIds":["472379e6", "6ee4c352"], "percentOpen":30.0], 
-            "129424":["coolingRate":0.079, "lastStartTemp":21.666, "heatingRate":0.064, "roomName":"", "ventIds":["c5e770b6"], "percentOpen":100], 
-            "122132":["coolingRate":0.026, "lastStartTemp":22.777, "heatingRate":0.035, "roomName":"", "ventIds":["e522531c"], "percentOpen":22.5], 
-            "122131":["coolingRate":0.030, "lastStartTemp":23.500, "heatingRate":0.055, "roomName":"", "ventIds":["acb0b95d"], "percentOpen":37.5]]]
+  def "adjustVentOpeningsToEnsureMinimumAirflowTarget() - empty state"() {
+    setup:
+    final log = new CapturingLog()
+    AppExecutor executorApi = Mock {
+      _ * getState() >> [:]
+      _ * getLog() >> log
     }
+    def sandbox = new HubitatAppSandbox(APP_FILE)
+    def script = sandbox.run('api': executorApi,
+          'validationFlags': VALIDATION_FLAGS,
+          'customizeScriptBeforeRun': BEFORE_RUN_SCRIPT)
+    expect:
+    script.adjustVentOpeningsToEnsureMinimumAirflowTarget([:], 0) == [:]
+  }
 
-
-    def "adjustVentOpeningsToEnsureMinimumAirflowTarget() - multiple vents and conventional vents"() {
-      setup:
-        def myAtomicState = ["roomState": [
-          "122127":["coolingRate":0.055, "lastStartTemp":24.388, "heatingRate":0.030, "roomName":"", "ventIds":["1222bc5e"], "percentOpen": 10], 
-          "122129":["coolingRate":0.035, "lastStartTemp":23.194, "heatingRate":0.026, "roomName":"", "ventIds":["00f65b12"], "percentOpen": 5], 
-          "122128":["coolingRate":0.064, "lastStartTemp":23.722, "heatingRate":0.079, "roomName":"", "ventIds":["d3f411b2"], "percentOpen": 15], 
-          "122133":["coolingRate":0.067, "lastStartTemp":22.446, "heatingRate":0.067, "roomName":"", "ventIds":["472379e6", "6ee4c352"], "percentOpen": 25], 
-          "129424":["coolingRate":0.079, "lastStartTemp":21.666, "heatingRate":0.064, "roomName":"", "ventIds":["c5e770b6"], "percentOpen": 100], 
-          "122132":["coolingRate":0.026, "lastStartTemp":22.777, "heatingRate":0.035, "roomName":"", "ventIds":["e522531c"], "percentOpen": 20], 
-          "122131":["coolingRate":0.030, "lastStartTemp":23.500, "heatingRate":0.055, "roomName":"", "ventIds":["acb0b95d"], "percentOpen": 35]
-        ]]
-        final def log = new CapturingLog()
-         AppExecutor executorApi = Mock{
-          _*getState() >> [:]
-          _*getAtomicState() >> myAtomicState
-          _*getLog() >> log
-        }
-        def sandbox = new HubitatAppSandbox(appFile)
-        def script = sandbox.run("api": executorApi, 
-          "validationFlags": validationFlags, 
-          "userSettingValues": userSettings)
-        script.adjustVentOpeningsToEnsureMinimumAirflowTarget(4d)
-
-      expect:
-        log.records[0] == new Tuple(CapturingLog.Level.debug, "Combined vent flow percentage (52.916666666666664) is greather than 30.0")
+  def "adjustVentOpeningsToEnsureMinimumAirflowTarget() - no percent open set"() {
+    setup:
+    AppExecutor executorApi = Mock {
+      _ * getState() >> [:]
     }
+    def sandbox = new HubitatAppSandbox(APP_FILE)
+    def script = sandbox.run('api': executorApi,
+      'validationFlags': VALIDATION_FLAGS,
+      'customizeScriptBeforeRun': BEFORE_RUN_SCRIPT)
+    def percentPerVentId = [
+      '122127': 30.0
+    ]
 
-    def "calculateRoomChangeRate()"() {
-      setup:
-        final def log = new CapturingLog()
-        AppExecutor executorApi = Mock{
-          _*getState() >> [:]
-          _*getLog() >> log
-        }
-        def sandbox = new HubitatAppSandbox(appFile)
-        def script = sandbox.run("api": executorApi, 
-          "validationFlags": validationFlags,
-          "userSettingValues": userSettings)
-      expect:
-        script.calculateRoomChangeRate(0, 0, 0, 4) == -1
-        log.records[0] == new Tuple(CapturingLog.Level.debug, "Vent was opened less than 5.0% (4), therefore it's being excluded") 
-        script.calculateRoomChangeRate(30, 20, 1.0, 100) == -1
-        log.records[1] == new Tuple(CapturingLog.Level.debug, "Change rate (10.0) is greater than 2.0, therefore it's being excluded") 
-        script.calculateRoomChangeRate(20.1, 20, 60.0, 100) == -1
-        log.records[2] == new Tuple(CapturingLog.Level.debug, "Change rate (0.0016666666666666668) is lower than 0.0017, therefore it's being excluded") 
-        script.calculateRoomChangeRate(21, 20.76849038, 5, 25) == 0.08618423052099167 
-        script.calculateRoomChangeRate(21, 19, 5.2, 70) == 0.4365970786870574
+    expect:
+    script.adjustVentOpeningsToEnsureMinimumAirflowTarget(percentPerVentId, 0) == percentPerVentId
+  }
+
+  def "adjustVentOpeningsToEnsureMinimumAirflowTarget() - single vent at 5%"() {
+    setup:
+    final log = new CapturingLog()
+    AppExecutor executorApi = Mock {
+      _ * getState() >> [:]
+      _ * getLog() >> log
     }
+    def sandbox = new HubitatAppSandbox(APP_FILE)
+    def script = sandbox.run('api': executorApi,
+    'validationFlags': VALIDATION_FLAGS,
+    'userSettingValues': USER_SETTINGS,
+    'customizeScriptBeforeRun': BEFORE_RUN_SCRIPT
+    )
+    def percentPerVentId = ['122127': 5]
+
+    expect:
+    script.adjustVentOpeningsToEnsureMinimumAirflowTarget(percentPerVentId, 0) ==
+      ['122127': 30.301]
+    log.records.size == 123
+    log.records[0] == new Tuple(Level.debug, 'Combined Vent Flow Percentage (5) is lower than 30.0%')
+    log.records[11] == new Tuple(Level.debug, 'Adjusting % open from 5.716260% to 5.802%')
+  }
+
+  def "adjustVentOpeningsToEnsureMinimumAirflowTarget() - multiple vents"() {
+    setup:
+    final log = new CapturingLog()
+    AppExecutor executorApi = Mock {
+      _ * getState() >> [:]
+      _ * getLog() >> log
+    }
+    def sandbox = new HubitatAppSandbox(APP_FILE)
+    def script = sandbox.run('api': executorApi,
+      'validationFlags': VALIDATION_FLAGS,
+      'userSettingValues': USER_SETTINGS,
+      'customizeScriptBeforeRun': BEFORE_RUN_SCRIPT)
+    def percentPerVentId = [
+      '122127': 10,
+      '122129': 5,
+      '122128': 10,
+      '122133': 25,
+      '129424': 100,
+      '122132': 5,
+      '122131': 5
+    ]
+
+    expect:
+    def newPercentPerVentId = [
+      '122127':18.412,
+      '122129':9.206,
+      '122128':18.412,
+      '122133':46.029,
+      '129424':100,
+      '122132':9.206,
+      '122131':9.206
+    ]
+    script.adjustVentOpeningsToEnsureMinimumAirflowTarget(percentPerVentId, 0) == newPercentPerVentId
+    log.records.size == 248
+    log.records[0] == new Tuple(Level.debug, 'Combined Vent Flow Percentage (22.8571428571) is lower than 30.0%')
+    log.records[8] == new Tuple(Level.debug, 'Adjusting % open from 10.14975% to 10.302%')
+  }
+
+  def "adjustVentOpeningsToEnsureMinimumAirflowTarget() - multiple vents and conventional vents"() {
+    setup:
+    final log = new CapturingLog()
+    AppExecutor executorApi = Mock {
+      _ * getState() >> [:]
+      _ * getLog() >> log
+    }
+    def sandbox = new HubitatAppSandbox(APP_FILE)
+    def script = sandbox.run('api': executorApi,
+      'validationFlags': VALIDATION_FLAGS,
+      'userSettingValues': USER_SETTINGS)
+    def percentPerVentId = [
+      '122127': 0,
+      '122129': 5,
+      '122128': 0,
+      '122133': 5,
+      '129424': 20,
+      '122132': 0,
+      '122131': 5
+    ]
+
+    expect:
+    def newPercentPerVentId = [
+      '122127':0.015,
+      '122129':18.815,
+      '122128':0.015,
+      '122133':18.815,
+      '129424':75.245,
+      '122132':0.015,
+      '122131':18.815
+    ]
+    script.adjustVentOpeningsToEnsureMinimumAirflowTarget(percentPerVentId, 4) == newPercentPerVentId
+    log.records[0] == new Tuple(Level.debug, 'Combined Vent Flow Percentage (21.3636363636) is lower than 30.0%')
+  }
+
+  def "calculateRoomChangeRate()"() {
+    setup:
+    final log = new CapturingLog()
+    AppExecutor executorApi = Mock {
+      _ * getState() >> [:]
+      _ * getLog() >> log
+    }
+    def sandbox = new HubitatAppSandbox(APP_FILE)
+    def script = sandbox.run('api': executorApi,
+      'validationFlags': VALIDATION_FLAGS,
+      'userSettingValues': USER_SETTINGS)
+
+    expect:
+    def expectedVals = [
+      -1,
+      -1,
+      -1,
+      -1,
+      0.059,
+      0.407,
+      1
+    ]
+    def actualVals = [
+      script.calculateRoomChangeRate(0, 0, 0, 4),
+      script.calculateRoomChangeRate(0, 0, 10, 4),
+      script.calculateRoomChangeRate(20, 30, 1.0, 100),
+      script.calculateRoomChangeRate(20, 20.1, 60.0, 100),
+      script.roundBigDecimal(script.calculateRoomChangeRate(20.768, 21, 5, 25)),
+      script.roundBigDecimal(script.calculateRoomChangeRate(19, 21, 5.2, 70)),
+      script.roundBigDecimal(script.calculateRoomChangeRate(19, 29, 10, 100))
+    ]
+    actualVals == expectedVals
+    log.records[0] == new Tuple(Level.debug, 'Invalid number of minutes of 0 passed to calculate rate change')
+    log.records[1] == new Tuple(Level.debug, "Change rate (0.000) is lower than 0.007, therefore it's being excluded")
+    log.records[2] == new Tuple(Level.debug, "Change rate (10.000) is greater than 2.0, therefore it's being excluded")
+    log.records[3] == new Tuple(Level.debug, "Change rate (0.002) is lower than 0.007, therefore it's being excluded")
+  }
 
 }

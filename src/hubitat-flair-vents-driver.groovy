@@ -1,4 +1,3 @@
-import groovy.json.JsonOutput
 
 /**
  *
@@ -18,20 +17,19 @@ import groovy.json.JsonOutput
  *
  */
 
-
- metadata {
-    definition(name: 'Flair vents', namespace: "bot.flair", author:  "Jaime Botero", importUrl: 'https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/master/hubitat-flair-vent-driver.groovy') {
+metadata {
+    definition(name: 'Flair vents', namespace: 'bot.flair', author:  'Jaime Botero') {
         capability 'Refresh'
         capability 'SwitchLevel'
 
         attribute 'rssi', 'number'
-        //attribute 'percent-open-reason', 'string'
+        //attribute "percent-open-reason", "string"
         attribute 'connected-gateway-puck-id', 'string'
-        attribute 'has-buzzed', "enum", ["true", "false"]
+        attribute 'has-buzzed', 'enum', ['true', 'false']
         attribute 'updated-at', 'string'
-        attribute 'inactive', "enum", ["true", "false"]
+        attribute 'inactive', 'enum', ['true', 'false']
         attribute 'created-at', 'string'
-        attribute 'percent-open', 'string'
+        attribute 'percent-open', 'number'
         attribute 'voltage', 'number'
         attribute 'setup-lightstrip', 'number'
         attribute 'motor-overdrive-ms', 'number'
@@ -45,6 +43,7 @@ import groovy.json.JsonOutput
         attribute 'room-id', 'string'
         attribute 'room-name', 'string'
         attribute 'room-current-temperature-c', 'number'
+        attribute 'room-starting-temperature-c', 'number'
         attribute 'room-conclusion-mode', 'string'
         attribute 'room-humidity-away-min', 'number'
         attribute 'room-type', 'string'
@@ -71,84 +70,85 @@ import groovy.json.JsonOutput
         attribute 'room-set-point-manual', 'string'
         attribute 'room-pucks-inactive', 'string'
         attribute 'room-occupied', 'number'
+        attribute 'room-cooling-rate', 'number'
+        attribute 'room-heating-rate', 'number'
 
         command 'setRoomActive', [[name: 'roomActive',  type: 'ENUM', constraints: ['true', 'false']]]
     }
-    
+
     preferences {
-        input "devicePoll", "number", title: "Device Polling Interval", 
-            description: "Change polling frequency of settings (minutes); 0 to disable polling", 
+        input 'devicePoll', 'number', title: 'Device Polling Interval',
+            description: 'Change polling frequency of settings (minutes); 0 to disable polling',
             defaultValue:3, required: true, displayDuringSetup: true
-        input name: "debugOutput", type: "bool", title: "Enable Debug Logging?", defaultValue: false
+        input name: 'debugOutput', type: 'bool', title: 'Enable Debug Logging?', defaultValue: false
     }
 }
 
 private logDebug(msg) {
-    if (settings?.debugOutput) {
-        log.debug "${device.label}: $msg"
-    }
+  if (settings?.debugOutput) {
+    log.debug "${device.label}: $msg"
+  }
 }
 
 def setRefreshSchedule() {
-    if (devicePoll == null) {
-        device.updateSetting('devicePoll', 3)
-    }
-    unschedule(settingsRefresh)
-    schedule("0 0/${devicePoll} * 1/1 * ? *", settingsRefresh)
+  if (devicePoll == null) {
+    device.updateSetting('devicePoll', 3)
+  }
+  unschedule(settingsRefresh)
+  schedule("0 0/${devicePoll} * 1/1 * ? *", settingsRefresh)
 }
 
 def installed() {
-    logDebug('installed')
-    initialize()
+  logDebug('installed')
+  initialize()
 }
 
 def updated() {
-    logDebug('updated')
-    initialize()
+  logDebug('updated')
+  initialize()
 }
 
 def uninstalled() {
-    logDebug('uninstalled')
+  logDebug('uninstalled')
 }
 
 def initialize() {
-    logDebug('initialize')
-    refresh()
+  logDebug('initialize')
+  refresh()
 }
 
 def refresh() {
-    logDebug('refresh')
-    settingsRefresh()
-    setRefreshSchedule()
+  logDebug('refresh')
+  settingsRefresh()
+  setRefreshSchedule()
 }
 
 def settingsRefresh() {
-    parent.getDeviceData(device)
+  parent.getDeviceData(device)
 }
 
 void setLevel(level, duration=null) {
-    logDebug("setLevel to ${level}")
-    parent.patchVent(device, level)
+  logDebug("setLevel to ${level}")
+  parent.patchVent(device, level)
 }
 
 def getLastEventTime() {
-    return state.lastEventTime
+  return state.lastEventTime
 }
 
 def setDeviceState(String attr, value) {
-    logDebug("updating state -- ${attr}: ${value}")
-    state[attr] = value
+  logDebug("updating state -- ${attr}: ${value}")
+  state[attr] = value
 }
 
 def getDeviceState(String attr) {
-    if (state[attr]) {
-        return state[attr]
-    } else {
-        refresh()
-    }
+  if (state[attr]) {
+    return state[attr]
+  }
+  refresh()
 }
 
 def setRoomActive(isActive) {
-    logDebug("setRoomActive: ${isActive}")  
-    parent.patchRoom(device, isActive)
+  logDebug("setRoomActive: ${isActive}")
+  parent.patchRoom(device, isActive)
 }
