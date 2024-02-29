@@ -119,7 +119,7 @@ class Test extends Specification {
           'userSettingValues': USER_SETTINGS)
 
     expect:
-    def expectedVals = [5.354, 30.238, 0.0, 0.278, 0.393, 0.156, 0.141, 4.276, 100.0]
+    def expectedVals = [5.354, 30.238, 67.911, 0.278, 0.393, 0.156, 0.141, 4.276, 100.0]
     def retVals = [
       script.calculateVentOpenPercentange(65, 70, 'heating', 0.715, 12.6),
       script.calculateVentOpenPercentange(61, 70, 'heating', 0.550, 20),
@@ -295,28 +295,24 @@ class Test extends Specification {
 
     expect:
     def expectedVals = [
-      -1,
-      -1,
-      -1,
-      -1,
+      -1, new Tuple(Level.debug, 'Insuficient number of minutes required to calculate change rate (0 should be greather than 4)'),      
+      -1, new Tuple(Level.debug, 'Change rate (0.000) is lower than 0.0001, therefore it is being excluded'),
+      2, 
+      0.002, 
       0.059,
       0.407,
-      1
+      1.000
     ]
     def actualVals = [
-      script.calculateRoomChangeRate(0, 0, 0, 4),
-      script.calculateRoomChangeRate(0, 0, 10, 4),
-      script.calculateRoomChangeRate(20, 30, 1.0, 100),
-      script.calculateRoomChangeRate(20, 20.1, 60.0, 100),
+      script.calculateRoomChangeRate(0, 0, 0, 4), log.records[0],      
+      script.calculateRoomChangeRate(0, 0, 10, 4), log.records[1],      
+      script.roundBigDecimal(script.calculateRoomChangeRate(20, 30, 5.0, 100)), 
+      script.roundBigDecimal(script.calculateRoomChangeRate(20, 20.1, 60.0, 100)),
       script.roundBigDecimal(script.calculateRoomChangeRate(20.768, 21, 5, 25)),
       script.roundBigDecimal(script.calculateRoomChangeRate(19, 21, 5.2, 70)),
       script.roundBigDecimal(script.calculateRoomChangeRate(19, 29, 10, 100))
     ]
     actualVals == expectedVals
-    log.records[0] == new Tuple(Level.debug, 'Invalid number of minutes of 0 passed to calculate rate change')
-    log.records[1] == new Tuple(Level.debug, "Change rate (0.000) is lower than 0.007, therefore it's being excluded")
-    log.records[2] == new Tuple(Level.debug, "Change rate (10.000) is greater than 2.0, therefore it's being excluded")
-    log.records[3] == new Tuple(Level.debug, "Change rate (0.002) is lower than 0.007, therefore it's being excluded")
   }
 
 }

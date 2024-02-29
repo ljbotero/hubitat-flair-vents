@@ -25,15 +25,14 @@ import groovy.transform.Field
 @Field static String PENDING_COOL = 'pending cool'
 @Field static String PENDING_HEAT = 'pending heat'
 @Field static String IDLE = 'idle'
-@Field static BigDecimal MINIMUM_PERCENTAGE_OPEN = 0.0
-@Field static BigDecimal ROOM_RATE_CALC_MINIMUM_MINUTES = 2.5
-@Field static BigDecimal MAXIMUM_PERCENTAGE_OPEN = 100.0
+@Field static BigDecimal MIN_PERCENTAGE_OPEN = 0.0
+@Field static BigDecimal ROOM_RATE_CALC_MIN_MINUTES = 2.5
+@Field static BigDecimal MAX_PERCENTAGE_OPEN = 100.0
 @Field static BigDecimal MAX_MINUTES_TO_SETPOINT = 60
-@Field static BigDecimal ACCEPTABLE_SETPOINT_DEVIATION_C = 0.5
-@Field static BigDecimal MAX_DIFFERENCE_IN_TEMPS_C = 15.0
+@Field static BigDecimal MIN_MINUTES_TO_SETPOINT = 4
 @Field static BigDecimal MAX_TEMP_CHANGE_RATE_C = 2.0
-@Field static BigDecimal MIN_TEMP_CHANGE_RATE_C = 0.007
-@Field static BigDecimal MINIMUM_COMBINED_VENT_FLOW_PERCENTAGE = 30.0
+@Field static BigDecimal MIN_TEMP_CHANGE_RATE_C = 0.001
+@Field static BigDecimal MIN_COMBINED_VENT_FLOW_PERCENTAGE = 30.0
 @Field static BigDecimal INREMENT_PERCENTAGE_WHEN_REACHING_VENT_FLOW_TAGET = 1.5
 @Field static Integer MAX_NUMBER_OF_STANDARD_VENTS = 15
 @Field static Integer HTTP_TIMEOUT_SECS = 5
@@ -165,10 +164,11 @@ def initialize(evt) {
 
 // Helpers
 def updateMaxRunningTime(totalMinutes) {
-  if (!atomicState?.maxHvacRunningTime) {
+  if (!atomicState?.maxHvacRunningTime && totalMinutes < MAX_MINUTES_TO_SETPOINT) {
     atomicState.maxHvacRunningTime = totalMinutes
-  } else if (totalMinutes > atomicState.maxHvacRunningTime &&
-    totalMinutes < MAX_MINUTES_TO_SETPOINT) {
+  } else if (totalMinutes >= MAX_MINUTES_TO_SETPOINT) {
+    atomicState.remove('maxHvacRunningTime')
+  } else if (totalMinutes > atomicState.maxHvacRunningTime) {
     atomicState.maxHvacRunningTime = totalMinutes
   }
 }
@@ -244,13 +244,15 @@ def getThermostatSetpoint(hvacMode) {
   BigDecimal setpoint = hvacMode == COOLING ?
      thermostat1.currentValue('coolingSetpoint') :
      thermostat1.currentValue('heatingSetpoint')
-
+  setpoint = setpoint ?: thermostat1.currentValue('thermostatSetpoint')
+  if (!setpoint) {
+    log.error('Thermostat has no setpoint property, please choose a vaid thermostat')
+    return setpoint
+  }
   if (settings.thermostat1TempUnit == '2') {
     setpoint =  convertFahrenheitToCentigrades(setpoint)
   }
-  hvacMode == COOLING ?
-     setpoint - ACCEPTABLE_SETPOINT_DEVIATION_C :
-     setpoint + ACCEPTABLE_SETPOINT_DEVIATION_C
+  return setpoint
 }
 
 def roundBigDecimal(BigDecimal number, decimalPoints = 3) {
@@ -564,6 +566,7 @@ def patchVent(device, percentOpen) {
     ]
   ]
   patchDataAsync(uri, handleVentPatch, body, [device: device])
+  sendEvent(device, [name: 'percent-open', value: pOpen])
 }
 
 def handleVentPatch(resp, data) {
@@ -649,7 +652,7 @@ def finalizeRoomStates(data) {
   def totalMinutes = (data.endTime - data.startTime) / (1000 * 60)
   log("HVAC ran for ${totalMinutes} minutes", 3)
   updateMaxRunningTime(totalMinutes)
-  if (totalMinutes >= ROOM_RATE_CALC_MINIMUM_MINUTES) {
+  if (totalMinutes >= ROOM_RATE_CALC_MIN_MINUTES) {
     data.ventIdsByRoomId.each { roomId, ventIds ->
       ventIds.each {
         def vent = getChildDevice(it)
@@ -679,6 +682,7 @@ def initializeRoomStates(hvacMode) {
   if (!atomicState.ventsByRoomId) { return }
   // Get the target temperature from the thermostat
   BigDecimal setpoint = getThermostatSetpoint(hvacMode)
+  if (!setpoint) { return }
   def tempData = getTempOfColdestAndHottestRooms()
   if (hvacMode == COOLING && tempData.tempColdestRoom < setpoint) {
     setpoint = tempData.tempColdestRoom
@@ -695,7 +699,7 @@ def initializeRoomStates(hvacMode) {
     rateAndTempPerVentId, hvacMode, setpoint, getMaxRunningTime())
   if (longestTimeToGetToTarget <= 0) {
     log("Openning all vents (setpoint: ${setpoint})", 3)
-    openAllVents(atomicState.ventsByRoomId, MAXIMUM_PERCENTAGE_OPEN)
+    openAllVents(atomicState.ventsByRoomId, MAX_PERCENTAGE_OPEN)
     return
   }
   log("Initializing room states - setpoint: ${setpoint}, longestTimeToGetToTarget: ${longestTimeToGetToTarget}", 3)
@@ -733,12 +737,12 @@ def adjustVentOpeningsToEnsureMinimumAirflowTarget(calculatedPercentOpenPerVentI
     return calculatedPercentOpenPerVentId
   }
   def combinedVentFlowPercentage = (100 * sumPercentages) / (totalDeviceCount * 100)
-  if (combinedVentFlowPercentage >= MINIMUM_COMBINED_VENT_FLOW_PERCENTAGE) {
-    log("Combined vent flow percentage (${combinedVentFlowPercentage}) is greather than ${MINIMUM_COMBINED_VENT_FLOW_PERCENTAGE}", 3)
+  if (combinedVentFlowPercentage >= MIN_COMBINED_VENT_FLOW_PERCENTAGE) {
+    log("Combined vent flow percentage (${combinedVentFlowPercentage}) is greather than ${MIN_COMBINED_VENT_FLOW_PERCENTAGE}", 3)
     return calculatedPercentOpenPerVentId
   }
-  log("Combined Vent Flow Percentage (${combinedVentFlowPercentage}) is lower than ${MINIMUM_COMBINED_VENT_FLOW_PERCENTAGE}%", 3)
-  def targetPercentSum = MINIMUM_COMBINED_VENT_FLOW_PERCENTAGE * totalDeviceCount
+  log("Combined Vent Flow Percentage (${combinedVentFlowPercentage}) is lower than ${MIN_COMBINED_VENT_FLOW_PERCENTAGE}%", 3)
+  def targetPercentSum = MIN_COMBINED_VENT_FLOW_PERCENTAGE * totalDeviceCount
   def diffPercentageSum = targetPercentSum - sumPercentages
   log("sumPercentages=${sumPercentages}, targetPercentSum=${targetPercentSum}, diffPercentageSum=${diffPercentageSum}", 2)
   def continueAdjustments = true
@@ -746,7 +750,7 @@ def adjustVentOpeningsToEnsureMinimumAirflowTarget(calculatedPercentOpenPerVentI
     continueAdjustments = false
     calculatedPercentOpenPerVentId.each { ventId, percentOpen ->
       def percentOpenVal = percentOpen ?: 0
-      if (percentOpenVal < MAXIMUM_PERCENTAGE_OPEN) {
+      if (percentOpenVal < MAX_PERCENTAGE_OPEN) {
         def increment = INREMENT_PERCENTAGE_WHEN_REACHING_VENT_FLOW_TAGET * ((percentOpenVal > 0 ? percentOpenVal : 1) / 100)
         percentOpenVal = roundBigDecimal(percentOpenVal + increment)
         calculatedPercentOpenPerVentId[ventId] = percentOpenVal
@@ -785,11 +789,14 @@ def calculateOpenPercentageForAllVents(rateAndTempPerVentId,
    hvacMode, setpoint, longestTimeToGetToTarget, closeInactiveRooms = true) {
   def calculatedPercentOpenPerVentId = [:]
   rateAndTempPerVentId.each { ventId, stateVal ->
-    def percentageOpen = calculateVentOpenPercentange(stateVal.temp, setpoint, hvacMode,
-        stateVal.rate, longestTimeToGetToTarget)
+    def percentageOpen = MIN_PERCENTAGE_OPEN
     if (closeInactiveRooms == true && !stateVal.active) {
       log('Closing vent on inactive room', 3)
-      percentageOpen = MINIMUM_PERCENTAGE_OPEN
+    } else if (stateVal.rate < MIN_TEMP_CHANGE_RATE_C) {
+      percentageOpen = MAX_PERCENTAGE_OPEN
+    } else {
+      percentageOpen = calculateVentOpenPercentange(stateVal.temp, setpoint, hvacMode,
+        stateVal.rate, longestTimeToGetToTarget)
     }
     calculatedPercentOpenPerVentId."${ventId}" = percentageOpen
   }
@@ -799,23 +806,19 @@ def calculateOpenPercentageForAllVents(rateAndTempPerVentId,
 def calculateVentOpenPercentange(startTemp, setpoint, hvacMode, rate, longestTimeToGetToTarget) {
   if (hasRoomReachedSetpoint(hvacMode, setpoint, startTemp)) {
     log("Room is already warmer/cooler (${startTemp}) than setpoint (${setpoint})", 3)
-    return MINIMUM_PERCENTAGE_OPEN
+    return MIN_PERCENTAGE_OPEN
   }
-  if (Math.abs(setpoint - startTemp) > MAX_DIFFERENCE_IN_TEMPS_C) {
-    log("Difference between start room temp (${startTemp}) and setpoint (${setpoint}) is too high", 3)
-    return MINIMUM_PERCENTAGE_OPEN
-  }
-  def percentageOpen = MAXIMUM_PERCENTAGE_OPEN
+  def percentageOpen = MAX_PERCENTAGE_OPEN
   if (rate > 0 && longestTimeToGetToTarget > 0) {
     BigDecimal A = RATE_FUNCTION_BASE_CONST
     BigDecimal r = Math.abs(setpoint - startTemp) / longestTimeToGetToTarget
     percentageOpen = A * Math.exp((-r * Math.log(A)) / rate)
     percentageOpen = roundBigDecimal(percentageOpen * 100)
     log("percentageOpen: (${percentageOpen})", 1)
-    if (percentageOpen < MINIMUM_PERCENTAGE_OPEN) {
-      percentageOpen = MINIMUM_PERCENTAGE_OPEN
-    } else if (percentageOpen > MAXIMUM_PERCENTAGE_OPEN) {
-      percentageOpen = MAXIMUM_PERCENTAGE_OPEN
+    if (percentageOpen < MIN_PERCENTAGE_OPEN) {
+      percentageOpen = MIN_PERCENTAGE_OPEN
+    } else if (percentageOpen > MAX_PERCENTAGE_OPEN) {
+      percentageOpen = MAX_PERCENTAGE_OPEN
     }
   }
   return percentageOpen
@@ -830,10 +833,10 @@ def checkActiveRooms() {
       boolean isRoomActive = vent.currentValue('room-active') == 'true'
       def currPercentOpen = (vent.currentValue('percent-open')).toInteger()
       if (settings.thermostat1CloseInactiveRooms == true &&
-         !isRoomActive && currPercentOpen > MINIMUM_PERCENTAGE_OPEN) {
+         !isRoomActive && currPercentOpen > MIN_PERCENTAGE_OPEN) {
         String roomName = vent.currentValue('room-name')
         log("Closing vent on inactive room (${roomName})", 3)
-        patchVent(vent, MINIMUM_PERCENTAGE_OPEN)
+        patchVent(vent, MIN_PERCENTAGE_OPEN)
       }
     }
   }
@@ -863,12 +866,13 @@ def calculateLongestMinutesToTarget(rateAndTempPerVentId, hvacMode, setpoint, ma
 }
 
 def calculateRoomChangeRate(lastStartTemp, currentTemp, totalMinutes, percentOpen) {
-  if (totalMinutes <= 0) {
-    log("Invalid number of minutes of ${totalMinutes} passed to calculate rate change", 3)
+  if (totalMinutes < MIN_MINUTES_TO_SETPOINT) {
+    log('Insuficient number of minutes required to calculate change rate ' +
+      "(${totalMinutes} should be greather than ${MIN_MINUTES_TO_SETPOINT})", 3)
     return -1
   }
-  if (percentOpen <= MINIMUM_PERCENTAGE_OPEN) {
-    log("Vent was opened less than ${MINIMUM_PERCENTAGE_OPEN}% (${percentOpen}), therefore it's being excluded", 3)
+  if (percentOpen <= MIN_PERCENTAGE_OPEN) {
+    log("Vent was opened less than ${MIN_PERCENTAGE_OPEN}% (${percentOpen}), therefore it is being excluded", 3)
     return -1
   }
   BigDecimal diffTemps = Math.abs(lastStartTemp - currentTemp)
@@ -884,12 +888,13 @@ def calculateRoomChangeRate(lastStartTemp, currentTemp, totalMinutes, percentOpe
 
   if (approxEquivMaxRate > MAX_TEMP_CHANGE_RATE_C) {
     def roundedRate = roundBigDecimal(approxEquivMaxRate)
-    log("Change rate (${roundedRate}) is greater than ${MAX_TEMP_CHANGE_RATE_C}, therefore it's being excluded", 3)
+    log("Change rate (${roundedRate}) is greater than ${MAX_TEMP_CHANGE_RATE_C}, therefore it is being excluded", 3)
     return -1
   } else if (approxEquivMaxRate < MIN_TEMP_CHANGE_RATE_C) {
     def roundedRate = roundBigDecimal(approxEquivMaxRate)
-    log("Change rate (${roundedRate}) is lower than ${MIN_TEMP_CHANGE_RATE_C}, therefore it's being excluded", 3)
+    log("Change rate (${roundedRate}) is lower than ${MIN_TEMP_CHANGE_RATE_C}, therefore it is being excluded", 3)
     return -1
   }
   return approxEquivMaxRate
 }
+
