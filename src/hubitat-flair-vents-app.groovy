@@ -24,7 +24,6 @@ import groovy.transform.Field
 @Field static String HEATING = 'heating'
 @Field static String PENDING_COOL = 'pending cool'
 @Field static String PENDING_HEAT = 'pending heat'
-@Field static String IDLE = 'idle'
 @Field static BigDecimal MIN_PERCENTAGE_OPEN = 0.0
 @Field static BigDecimal ROOM_RATE_CALC_MIN_MINUTES = 2.5
 @Field static BigDecimal MAX_PERCENTAGE_OPEN = 100.0
@@ -36,8 +35,8 @@ import groovy.transform.Field
 @Field static BigDecimal INREMENT_PERCENTAGE_WHEN_REACHING_VENT_FLOW_TAGET = 1.5
 @Field static Integer MAX_NUMBER_OF_STANDARD_VENTS = 15
 @Field static Integer HTTP_TIMEOUT_SECS = 5
-@Field static BigDecimal RATE_FUNCTION_BASE_CONST = 0.00139
-@Field static BigDecimal RATE_FUNCTION_EXP_CONST = 6.58
+@Field static BigDecimal BASE_CONST = 0.00139
+@Field static BigDecimal EXP_CONST = 6.58
 
 definition(
     name: 'Flair Vents',
@@ -267,6 +266,16 @@ def roundToNearestFifth(BigDecimal num) {
   Math.round(num / 5) * 5
 }
 
+def rollingAverage(BigDecimal currentAverage, BigDecimal newNumber, BigDecimal weight = 1, int numEntries = 10) {
+  if (numEntries <= 0) { return 0 }
+  BigDecimal rollingAverage = !currentAverage || currentAverage == 0 ? newNumber : currentAverage
+  BigDecimal sum = rollingAverage * (numEntries - 1)
+  def weightedValue = (newNumber - rollingAverage) * weight
+  def numberToAdd = rollingAverage + weightedValue
+  sum += numberToAdd
+  return sum / numEntries
+}
+
 def hasRoomReachedSetpoint(hvacMode, setpoint, currentVentTemp) {
   (hvacMode == COOLING && setpoint >= currentVentTemp) || (hvacMode == HEATING && setpoint <= currentVentTemp)
 }
@@ -322,7 +331,7 @@ def patchDataAsync(uri, handler, body, data = null) {
      requestContentType: contentType,
      timeout: HTTP_TIMEOUT_SECS,
      body: groovy.json.JsonOutput.toJson(body)
-   ]
+  ]
   asynchttpPatch(handler, httpParams, data)
   log("patchDataAsync:${uri}, body:${body}", 2)
 }
@@ -660,16 +669,14 @@ def finalizeRoomStates(data) {
         def percentOpen = getPercentageOpen(ventIds)
         BigDecimal currentTemp = getRoomTemp(ventIds)
         BigDecimal lastStartTemp = vent.currentValue('room-starting-temperature-c')
-        def rate = calculateRoomChangeRate(lastStartTemp, currentTemp, totalMinutes, percentOpen)
-        if (rate < 0) {
-          return
-        } else if (data.hvacMode == COOLING) {
-          sendEvent(vent, [name: 'room-cooling-rate', value: rate])
-        } else if (data.hvacMode == HEATING) {
-          sendEvent(vent, [name: 'room-heating-rate', value: rate])
-        } else {
-          return
-        }
+        def newRate = calculateRoomChangeRate(lastStartTemp, currentTemp, totalMinutes, percentOpen)
+        if (newRate < 0) { return }
+        def ratePropName = hvacMode == COOLING ? 'room-cooling-rate' : 'room-heating-rate'
+        def currentRate = vent.currentValue(ratePropName)
+        def rate = rollingAverage(currentRate, newRate, percentOpen / 100)
+        sendEvent(vent, [name: ratePropName, value: rate])
+        // def roomName = vent.currentValue('room-name')
+        // log("'${roomName}': currentRate: ${roundBigDecimal(currentRate)}, rollingRate: ${roundBigDecimal(rate)}", 3)
       }
     }
   }
@@ -705,7 +712,7 @@ def initializeRoomStates(hvacMode) {
   log("Initializing room states - setpoint: ${setpoint}, longestTimeToGetToTarget: ${longestTimeToGetToTarget}", 3)
 
   // Calculate percent open for each vent vents proportionally
-  log("rateAndTempPerVentId: ${rateAndTempPerVentId}", 3)
+  //log("rateAndTempPerVentId: ${rateAndTempPerVentId}", 3)
   def calculatedPercentOpenPerVentId = calculateOpenPercentageForAllVents(
     rateAndTempPerVentId, hvacMode, setpoint, longestTimeToGetToTarget,
     settings.thermostat1CloseInactiveRooms)
@@ -803,16 +810,15 @@ def calculateOpenPercentageForAllVents(rateAndTempPerVentId,
   return calculatedPercentOpenPerVentId
 }
 
-def calculateVentOpenPercentange(startTemp, setpoint, hvacMode, rate, longestTimeToGetToTarget) {
+def calculateVentOpenPercentange(startTemp, setpoint, hvacMode, maxRate, longestTimeToGetToTarget) {
   if (hasRoomReachedSetpoint(hvacMode, setpoint, startTemp)) {
     log("Room is already warmer/cooler (${startTemp}) than setpoint (${setpoint})", 3)
     return MIN_PERCENTAGE_OPEN
   }
   def percentageOpen = MAX_PERCENTAGE_OPEN
-  if (rate > 0 && longestTimeToGetToTarget > 0) {
-    BigDecimal A = RATE_FUNCTION_BASE_CONST
-    BigDecimal r = Math.abs(setpoint - startTemp) / longestTimeToGetToTarget
-    percentageOpen = A * Math.exp((-r * Math.log(A)) / rate)
+  if (maxRate > 0 && longestTimeToGetToTarget > 0) {
+    def targetRate = Math.abs(setpoint - startTemp) / longestTimeToGetToTarget
+    percentageOpen = BASE_CONST * Math.exp((-targetRate * Math.log(BASE_CONST)) / maxRate)
     percentageOpen = roundBigDecimal(percentageOpen * 100)
     log("percentageOpen: (${percentageOpen})", 1)
     if (percentageOpen < MIN_PERCENTAGE_OPEN) {
@@ -878,12 +884,10 @@ def calculateRoomChangeRate(lastStartTemp, currentTemp, totalMinutes, percentOpe
   BigDecimal diffTemps = Math.abs(lastStartTemp - currentTemp)
   BigDecimal rate = diffTemps / totalMinutes
 
-  BigDecimal A = RATE_FUNCTION_BASE_CONST
-  BigDecimal B = RATE_FUNCTION_EXP_CONST
-  BigDecimal P = percentOpen / 100
+  BigDecimal pOpen = percentOpen / 100
 
-  BigDecimal equivalentExpRate = (Math.log(P / A)) / B
-  BigDecimal approxMaxRate = (Math.log(1 / A)) / B
+  BigDecimal equivalentExpRate = (Math.log(pOpen / BASE_CONST)) / EXP_CONST
+  BigDecimal approxMaxRate = (Math.log(1 / BASE_CONST)) / EXP_CONST
   BigDecimal approxEquivMaxRate = (approxMaxRate * rate) / equivalentExpRate
 
   if (approxEquivMaxRate > MAX_TEMP_CHANGE_RATE_C) {

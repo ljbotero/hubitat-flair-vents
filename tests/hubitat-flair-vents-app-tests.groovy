@@ -27,7 +27,7 @@ class Test extends Specification {
         String arg1, String arg2, AbstractMap arg3 -> '' }
   }
 
-  def "roundToNearestFifth()"() {
+  def "roundToNearestFifthTest"() {
     setup:
     AppExecutor executorApi = Mock {
       _   * getState() >> [:]
@@ -43,7 +43,27 @@ class Test extends Specification {
     script.roundToNearestFifth(97.5) == 100
   }
 
-  def "calculateOpenPercentageForAllVents"() {
+  def "rollingAverageTest"() {
+    setup:
+    AppExecutor executorApi = Mock {
+      _   * getState() >> [:]
+    }
+    def sandbox = new HubitatAppSandbox(APP_FILE)
+    def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+
+    expect:
+    script.rollingAverage(10, 15, 1, 2) == 12.5
+    script.rollingAverage(10, 15, 0.5, 2) == 11.25
+    script.rollingAverage(10, 15, 0, 2) == 10
+    script.rollingAverage(10, 5, 1, 2) == 7.5
+    script.rollingAverage(10, 5, 0.5, 2) == 8.75
+    script.rollingAverage(10, 5, 1, 1000) == 9.995
+    script.rollingAverage(10, 5, 1, 0) == 0
+    script.rollingAverage(0, 15, 1, 2) == 15
+    script.rollingAverage(null, 15, 1, 2) == 15
+  }
+
+  def "calculateOpenPercentageForAllVentsTest"() {
     setup:
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
@@ -78,7 +98,7 @@ class Test extends Specification {
     ]
   }
 
-  def "calculateLongestMinutesToTarget"() {
+  def "calculateLongestMinutesToTargetTest"() {
     setup:
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
@@ -106,7 +126,7 @@ class Test extends Specification {
       'which is longer than the limit of 72 minutes')
   }
 
-  def "calculateVentOpenPercentange"() {
+  def "calculateVentOpenPercentangeTest"() {
     setup:
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
@@ -134,7 +154,7 @@ class Test extends Specification {
     expectedVals == retVals
   }
 
-  def "calculateVentOpenPercentange() - Already reached"() {
+  def "calculateVentOpenPercentangeTest - Already reached"() {
     setup:
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
@@ -168,7 +188,7 @@ class Test extends Specification {
     script.adjustVentOpeningsToEnsureMinimumAirflowTarget([:], 0) == [:]
   }
 
-  def "adjustVentOpeningsToEnsureMinimumAirflowTarget() - no percent open set"() {
+  def "adjustVentOpeningsToEnsureMinimumAirflowTargetTest - no percent open set"() {
     setup:
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
@@ -185,7 +205,7 @@ class Test extends Specification {
     script.adjustVentOpeningsToEnsureMinimumAirflowTarget(percentPerVentId, 0) == percentPerVentId
   }
 
-  def "adjustVentOpeningsToEnsureMinimumAirflowTarget() - single vent at 5%"() {
+  def "adjustVentOpeningsToEnsureMinimumAirflowTargetTest - single vent at 5%"() {
     setup:
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
@@ -208,7 +228,7 @@ class Test extends Specification {
     log.records[11] == new Tuple(Level.debug, 'Adjusting % open from 5.716260% to 5.802%')
   }
 
-  def "adjustVentOpeningsToEnsureMinimumAirflowTarget() - multiple vents"() {
+  def "adjustVentOpeningsToEnsureMinimumAirflowTargetTest - multiple vents"() {
     setup:
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
@@ -246,7 +266,7 @@ class Test extends Specification {
     log.records[8] == new Tuple(Level.debug, 'Adjusting % open from 10.14975% to 10.302%')
   }
 
-  def "adjustVentOpeningsToEnsureMinimumAirflowTarget() - multiple vents and conventional vents"() {
+  def "adjustVentOpeningsToEnsureMinimumAirflowTargetTest - multiple vents and conventional vents"() {
     setup:
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
@@ -281,7 +301,7 @@ class Test extends Specification {
     log.records[0] == new Tuple(Level.debug, 'Combined Vent Flow Percentage (21.3636363636) is lower than 30.0%')
   }
 
-  def "calculateRoomChangeRate()"() {
+  def "calculateRoomChangeRateTest"() {
     setup:
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
@@ -295,18 +315,18 @@ class Test extends Specification {
 
     expect:
     def expectedVals = [
-      -1, new Tuple(Level.debug, 'Insuficient number of minutes required to calculate change rate (0 should be greather than 4)'),      
-      -1, new Tuple(Level.debug, 'Change rate (0.000) is lower than 0.0001, therefore it is being excluded'),
-      2, 
-      0.002, 
+      -1, new Tuple(Level.debug, 'Insuficient number of minutes required to calculate change rate (0 should be greather than 4)'),
+      -1, new Tuple(Level.debug, 'Change rate (0.000) is lower than 0.001, therefore it is being excluded'),
+      2,
+      0.002,
       0.059,
       0.407,
       1.000
     ]
     def actualVals = [
-      script.calculateRoomChangeRate(0, 0, 0, 4), log.records[0],      
-      script.calculateRoomChangeRate(0, 0, 10, 4), log.records[1],      
-      script.roundBigDecimal(script.calculateRoomChangeRate(20, 30, 5.0, 100)), 
+      script.calculateRoomChangeRate(0, 0, 0, 4), log.records[0],
+      script.calculateRoomChangeRate(0, 0, 10, 4), log.records[1],
+      script.roundBigDecimal(script.calculateRoomChangeRate(20, 30, 5.0, 100)),
       script.roundBigDecimal(script.calculateRoomChangeRate(20, 20.1, 60.0, 100)),
       script.roundBigDecimal(script.calculateRoomChangeRate(20.768, 21, 5, 25)),
       script.roundBigDecimal(script.calculateRoomChangeRate(19, 21, 5.2, 70)),
