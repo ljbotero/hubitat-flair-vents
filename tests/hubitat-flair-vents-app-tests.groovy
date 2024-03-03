@@ -27,6 +27,26 @@ class Test extends Specification {
         String arg1, String arg2, AbstractMap arg3 -> '' }
   }
 
+  def "hasRoomReachedSetpointTest"() {
+    setup:
+    AppExecutor executorApi = Mock {
+      _   * getState() >> [:]
+    }
+    def sandbox = new HubitatAppSandbox(APP_FILE)
+    def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+
+    expect:
+    script.hasRoomReachedSetpoint('cooling', 80, 75) == true
+    script.hasRoomReachedSetpoint('cooling', 80, 79) == true
+    script.hasRoomReachedSetpoint('cooling', 80, 80) == true
+    script.hasRoomReachedSetpoint('cooling', 80, 81) == false
+
+    script.hasRoomReachedSetpoint('heating', 70, 65) == false
+    script.hasRoomReachedSetpoint('heating', 70, 69) == false
+    script.hasRoomReachedSetpoint('heating', 70, 70) == true
+    script.hasRoomReachedSetpoint('heating', 70, 70.01) == true
+  }
+
   def "roundToNearestFifthTest"() {
     setup:
     AppExecutor executorApi = Mock {
@@ -122,8 +142,8 @@ class Test extends Specification {
 
     expect:
     script.calculateLongestMinutesToTarget(rateAndTempPerVentId, 'cooling', 23.666, 72) == 72
-    log.records[2] == new Tuple(Level.warn, "Room '3' is taking 74.6 minutes, " +
-      'which is longer than the limit of 72 minutes')
+    log.records[2] == new Tuple(Level.warn, "'3' is estimated to take 74.6 minutes " +
+      'to reach target temp, which is longer than the average 72 minutes')
   }
 
   def "calculateVentOpenPercentangeTest"() {
@@ -168,9 +188,9 @@ class Test extends Specification {
 
     expect:
     script.calculateVentOpenPercentange(75, 70, 'heating', 0.1, 1) == 0
-    log.records[0] == new Tuple(Level.debug, 'Room is already warmer/cooler (75) than setpoint (70)')
+    log.records[0] == new Tuple(Level.debug, 'Room is already warmer (75) than setpoint (70)')
     script.calculateVentOpenPercentange(75, 80, 'cooling', 0.1, 1) == 0
-    log.records[1] == new Tuple(Level.debug, 'Room is already warmer/cooler (75) than setpoint (80)')
+    log.records[1] == new Tuple(Level.debug, 'Room is already cooler (75) than setpoint (80)')
   }
 
   def "adjustVentOpeningsToEnsureMinimumAirflowTarget() - empty state"() {
