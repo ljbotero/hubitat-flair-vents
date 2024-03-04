@@ -676,8 +676,6 @@ def initializeRoomStates(hvacMode) {
   }
   log("Initializing room states - setpoint: ${setpoint}, longestTimeToGetToTarget: ${longestTimeToGetToTarget}", 3)
 
-  // Calculate percent open for each vent vents proportionally
-  //log("rateAndTempPerVentId: ${rateAndTempPerVentId}", 3)
   def calculatedPercentOpenPerVentId = calculateOpenPercentageForAllVents(
     rateAndTempPerVentId, hvacMode, setpoint, longestTimeToGetToTarget,
     settings.thermostat1CloseInactiveRooms)
@@ -728,14 +726,13 @@ def adjustVentOpeningsToEnsureMinimumAirflowTarget(calculatedPercentOpenPerVentI
     continueAdjustments = false
     calculatedPercentOpenPerVentId.each { ventId, percentOpen ->
       def percentOpenVal = percentOpen ?: 0
-      if (percentOpenVal < MAX_PERCENTAGE_OPEN) {
-        def increment = INREMENT_PERCENTAGE_WHEN_REACHING_VENT_FLOW_TAGET * ((percentOpenVal > 0 ? percentOpenVal : 1) / 100)
-        percentOpenVal = percentOpenVal + increment
-        calculatedPercentOpenPerVentId[ventId] = percentOpenVal
-        diffPercentageSum = diffPercentageSum - increment
-        continueAdjustments = true
-        log("Adjusting % open from ${roundBigDecimal(percentOpenVal - increment)}% to ${roundBigDecimal(percentOpenVal)}%", 2)
-      }
+      if (percentOpenVal >= MAX_PERCENTAGE_OPEN) { return }      
+      def increment = INREMENT_PERCENTAGE_WHEN_REACHING_VENT_FLOW_TAGET * ((percentOpenVal > 0 ? percentOpenVal : 1) / 100)
+      percentOpenVal = percentOpenVal + increment
+      calculatedPercentOpenPerVentId[ventId] = percentOpenVal
+      diffPercentageSum = diffPercentageSum - increment
+      continueAdjustments = true
+      log("Adjusting % open from ${roundBigDecimal(percentOpenVal - increment)}% to ${roundBigDecimal(percentOpenVal)}%", 2)
     }
   }
   return calculatedPercentOpenPerVentId
