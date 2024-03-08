@@ -168,8 +168,9 @@ private openAllVents(ventIdsByRoomId, percentOpen) {
   ventIdsByRoomId.each { roomId, ventIds ->
     ventIds.each {
       def vent = getChildDevice(it)
-      if (!vent) { return }
-      patchVent(vent, percentOpen)
+      if (vent) {
+        patchVent(vent, percentOpen)
+      }
     }
   }
 }
@@ -529,6 +530,11 @@ def patchVent(device, percentOpen) {
   } else if (pOpen  < 0) {
     pOpen = 0
   }
+  def currPercentOpen = (vent.currentValue('percent-open')).toInteger()
+  if (percentOpen == currPercentOpen) {
+    return
+  }
+
   def deviceId = device.getDeviceNetworkId()
   def uri = BASE_URL + '/api/vents/' + deviceId
   def body = [
@@ -628,15 +634,15 @@ def finalizeRoomStates(data) {
   atomicState.maxHvacRunningTime = rollingAverage(atomicState.maxHvacRunningTime, totalMinutes)
   if (totalMinutes >= ROOM_RATE_CALC_MIN_MINUTES) {
     data.ventIdsByRoomId.each { roomId, ventIds ->
-      ventIds.each {
+      for (ventId in ventIds) {
         try {
-          def vent = getChildDevice(it)
-          if (!vent) { return }
+          def vent = getChildDevice(ventId)
+          if (!vent) { break }
           def percentOpen = getPercentageOpen(ventIds)
           BigDecimal currentTemp = getRoomTemp(ventIds)
           BigDecimal lastStartTemp = vent.currentValue('room-starting-temperature-c')
           def newRate = calculateRoomChangeRate(lastStartTemp, currentTemp, totalMinutes, percentOpen)
-          if (newRate < 0) { return }
+          if (newRate < 0) { break }
           def ratePropName = hvacMode == COOLING ? 'room-cooling-rate' : 'room-heating-rate'
           def currentRate = vent.currentValue(ratePropName)
           def rate = rollingAverage(currentRate, newRate, percentOpen / 100)
@@ -686,7 +692,7 @@ def initializeRoomStates(hvacMode) {
   }
 
   // Ensure mimimum combined vent flow across vents
-  calculatedPercentOpenPerVentId = adjustVentOpeningsToEnsureMinimumAirflowTarget(
+  calculatedPercentOpenPerVentId = adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId, hvacMode,
     calculatedPercentOpenPerVentId, settings.thermostat1AdditionalStandardVents)
 
   // Apply open percentage across all vents
@@ -698,7 +704,8 @@ def initializeRoomStates(hvacMode) {
   }
 }
 
-def adjustVentOpeningsToEnsureMinimumAirflowTarget(calculatedPercentOpenPerVentId, additionalStandardVents) {
+def adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId, hvacMode,
+  calculatedPercentOpenPerVentId, additionalStandardVents) {
   def totalDeviceCount = additionalStandardVents > 0 ? additionalStandardVents : 0
   def sumPercentages = totalDeviceCount * 50 // Assuming all standard vents are at 50%
   calculatedPercentOpenPerVentId.each { ventId, percentOpen ->
@@ -711,6 +718,14 @@ def adjustVentOpeningsToEnsureMinimumAirflowTarget(calculatedPercentOpenPerVentI
     log.warn('totalDeviceCount is zero')
     return calculatedPercentOpenPerVentId
   }
+  BigDecimal maxTemp = null
+  BigDecimal minTemp = null
+  rateAndTempPerVentId.each { ventId, stateVal ->
+    maxTemp = maxTemp == null || maxTemp < stateVal.temp ? stateVal.temp : maxTemp
+    minTemp = minTemp == null || minTemp > stateVal.temp ? stateVal.temp : minTemp
+  }
+  minTemp = minTemp - 0.1
+  maxTemp = maxTemp + 0.1
   def combinedVentFlowPercentage = (100 * sumPercentages) / (totalDeviceCount * 100)
   if (combinedVentFlowPercentage >= MIN_COMBINED_VENT_FLOW_PERCENTAGE) {
     log("Combined vent flow percentage (${combinedVentFlowPercentage}) is greather than ${MIN_COMBINED_VENT_FLOW_PERCENTAGE}", 3)
@@ -720,19 +735,25 @@ def adjustVentOpeningsToEnsureMinimumAirflowTarget(calculatedPercentOpenPerVentI
   def targetPercentSum = MIN_COMBINED_VENT_FLOW_PERCENTAGE * totalDeviceCount
   def diffPercentageSum = targetPercentSum - sumPercentages
   log("sumPercentages=${sumPercentages}, targetPercentSum=${targetPercentSum}, diffPercentageSum=${diffPercentageSum}", 2)
-  def continueAdjustments = true
   def iterations = 0
-  while (diffPercentageSum > 0 && continueAdjustments && iterations++ < MAX_ITERATIONS) {
-    continueAdjustments = false
-    calculatedPercentOpenPerVentId.each { ventId, percentOpen ->
-      def percentOpenVal = percentOpen ?: 0
-      if (percentOpenVal >= MAX_PERCENTAGE_OPEN) { return }      
-      def increment = INREMENT_PERCENTAGE_WHEN_REACHING_VENT_FLOW_TAGET * ((percentOpenVal > 0 ? percentOpenVal : 1) / 100)
-      percentOpenVal = percentOpenVal + increment
-      calculatedPercentOpenPerVentId[ventId] = percentOpenVal
-      diffPercentageSum = diffPercentageSum - increment
-      continueAdjustments = true
-      log("Adjusting % open from ${roundBigDecimal(percentOpenVal - increment)}% to ${roundBigDecimal(percentOpenVal)}%", 2)
+  while (diffPercentageSum > 0 && iterations++ < MAX_ITERATIONS) {
+    for (item in rateAndTempPerVentId) {
+      def ventId = item.key
+      def stateVal = item.value
+      def percentOpenVal = calculatedPercentOpenPerVentId?."${ventId}" ?: 0
+      if (percentOpenVal >= MAX_PERCENTAGE_OPEN) {
+        percentOpenVal = MAX_PERCENTAGE_OPEN
+      } else {
+        def proportion = hvacMode == COOLING ?
+          (stateVal.temp - minTemp) / (maxTemp - minTemp) :
+          (maxTemp - stateVal.temp) / (maxTemp - minTemp)
+        def increment = INREMENT_PERCENTAGE_WHEN_REACHING_VENT_FLOW_TAGET * proportion
+        percentOpenVal = percentOpenVal + increment
+        calculatedPercentOpenPerVentId."${ventId}" = percentOpenVal
+        log("Adjusting % open from ${roundBigDecimal(percentOpenVal - increment)}% to ${roundBigDecimal(percentOpenVal)}%", 2)
+        diffPercentageSum = diffPercentageSum - increment
+        if (diffPercentageSum <= 0) { break }
+      }
     }
   }
   return calculatedPercentOpenPerVentId
@@ -741,16 +762,16 @@ def adjustVentOpeningsToEnsureMinimumAirflowTarget(calculatedPercentOpenPerVentI
 def getAttribsPerVentId(ventIdsByRoomId) {
   def rateAndTempPerVentId = [:]
   ventIdsByRoomId.each { roomId, ventIds ->
-    ventIds.each {
+    for (ventId in ventIds) {
       try {
-        def vent = getChildDevice(it)
-        if (!vent) { return }
+        def vent = getChildDevice(ventId)
+        if (!vent) { break }
         def rate = hvacMode == COOLING ?
           vent.currentValue('room-cooling-rate') :
           vent.currentValue('room-heating-rate')
         rate = rate ?: 0
         def isRoomActive = vent.currentValue('room-active') == 'true'
-        rateAndTempPerVentId."${it}" = [
+        rateAndTempPerVentId."${ventId}" = [
           'rate':  rate,
           'temp': vent.currentValue('room-current-temperature-c'),
           'active': isRoomActive,
@@ -811,10 +832,10 @@ def calculateVentOpenPercentange(startTemp, setpoint, hvacMode, maxRate, longest
 def checkActiveRooms() {
   if (!atomicState.ventsByRoomId) { return }
   atomicState.ventsByRoomId.each { roomId, ventIds ->
-    ventIds.each {
+    for (ventId in ventIds) {
       try{
-        def vent = getChildDevice(it)
-        if (!vent) { return }
+        def vent = getChildDevice(ventId)
+        if (!vent) { break }
         boolean isRoomActive = vent.currentValue('room-active') == 'true'
         def currPercentOpen = (vent.currentValue('percent-open')).toInteger()
         if (settings.thermostat1CloseInactiveRooms == true &&

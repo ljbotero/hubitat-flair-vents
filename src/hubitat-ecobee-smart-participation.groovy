@@ -29,6 +29,8 @@ def mainPage() {
         'capability.temperatureMeasurement'
       input name: 'programs', type: 'enum', title: 'Participating Programs', submitOnChange: true,
         required: true, multiple: true, options: getThermostatPrograms()
+      input name: 'range', type: 'enum', title: 'Range of temperatures to include as participating sensors', defaultValue: 2,
+        options: [4:'Top/Bottom Quarter', 3:'Top/Bottom Third', 2:'Median'], submitOnChange: true
       input 'occupancyModes', title: 'Modes Where Occupancy is Used',  multiple: true, 'mode'
       input name: 'debugLevel', type: 'enum', title: 'Choose debug level', defaultValue: 0,
         options: [0:'None', 1:'Level 1 (All)', 2:'Level 2', 3:'Level 3'], submitOnChange: true
@@ -129,9 +131,10 @@ def recalculateSensorParticipationInit(sensorsList, heatingSetpoint, coolingSetp
     "${avgTemp > medSetPoint ? 'Cooling' : 'Heating'}", 3)
 
   def sensorPrograms = [:]
+  def rangeLevel = (settings?.range).toInteger()
   if (avgTemp > medSetPoint) {
     // Cooling
-    def tempsHottestQuarter = highestTemp - ((highestTemp - lowestTemp) / 3)
+    def tempsHottestQuarter = highestTemp - ((highestTemp - lowestTemp) / rangeLevel)
     sensorsList.each {  id, props ->
       def isOccupied = useOccupancy ? props.occupancy == OCCUPIED : true
       if (!isOccupied) { return }
@@ -142,7 +145,7 @@ def recalculateSensorParticipationInit(sensorsList, heatingSetpoint, coolingSetp
     }
   } else {
     // Heating
-    def tempsColdestQuarter = lowestTemp + ((highestTemp - lowestTemp) / 3)
+    def tempsColdestQuarter = lowestTemp + ((highestTemp - lowestTemp) / rangeLevel)
     sensorsList.each {  id, props ->
       def isOccupied = useOccupancy ? props.occupancy == OCCUPIED : true
       if (!isOccupied) { return }
