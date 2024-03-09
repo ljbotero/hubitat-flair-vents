@@ -530,7 +530,7 @@ def patchVent(device, percentOpen) {
   } else if (pOpen  < 0) {
     pOpen = 0
   }
-  def currPercentOpen = (vent.currentValue('percent-open')).toInteger()
+  def currPercentOpen = (device.currentValue('percent-open')).toInteger()
   if (percentOpen == currPercentOpen) {
     return
   }
@@ -833,7 +833,7 @@ def checkActiveRooms() {
   if (!atomicState.ventsByRoomId) { return }
   atomicState.ventsByRoomId.each { roomId, ventIds ->
     for (ventId in ventIds) {
-      try{
+      try {
         def vent = getChildDevice(ventId)
         if (!vent) { break }
         boolean isRoomActive = vent.currentValue('room-active') == 'true'
