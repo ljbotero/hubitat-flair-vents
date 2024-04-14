@@ -55,7 +55,7 @@ def uninstalled() {
 }
 
 def initialize() {
-  unsubscribe(settings.thermostat, 'thermostatOperatingState')
+  unsubscribe()
   subscribe(settings.thermostat, 'thermostatOperatingState', thermostatChangeStateHandler)
   thermostatChangeStateHandler([value: 'Initializing'])
 }

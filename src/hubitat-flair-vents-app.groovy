@@ -25,10 +25,12 @@ import groovy.transform.Field
 @Field static String PENDING_COOL = 'pending cool'
 @Field static String PENDING_HEAT = 'pending heat'
 @Field static BigDecimal MIN_PERCENTAGE_OPEN = 0.0
+@Field static BigDecimal VENT_PRE_ADJUSTMENT_THRESHOLD_C = 0.2
 @Field static BigDecimal ROOM_RATE_CALC_MIN_MINUTES = 2.5
 @Field static BigDecimal MAX_PERCENTAGE_OPEN = 100.0
 @Field static BigDecimal MAX_MINUTES_TO_SETPOINT = 60
 @Field static BigDecimal MIN_MINUTES_TO_SETPOINT = 4
+@Field static BigDecimal SETPOINT_OFFSET_C = 0.7
 @Field static BigDecimal MAX_TEMP_CHANGE_RATE_C = 2.0
 @Field static BigDecimal MIN_TEMP_CHANGE_RATE_C = 0.001
 @Field static BigDecimal MIN_COMBINED_VENT_FLOW_PERCENTAGE = 30.0
@@ -63,23 +65,21 @@ def mainPage() {
       input 'clientSecret', 'text', title: 'Client Secret OAuth 2.0', required: true, submitOnChange: true
       paragraph '<b><small>Obtain your client Id and secret from ' +
         "<a href='https://forms.gle/VohiQjWNv9CAP2ASA' target='_blank'>here<a/></b></small>"
-    }
+      if (settings?.clientId != null && settings?.clientSecret != null ) {
+        input 'authenticate', 'button', title: 'Authenticate', submitOnChange: true
+      }
 
-    if (settings?.clientId != null && settings?.clientSecret != null ) {
-      login()
-      unschedule(login)
-      runEvery1Hour login
-    }
-
-    if (state.authError) {
-      section {
-        paragraph "<span style='color: red;'>${state.authError}</span>"
+      if (state.authError) {
+        section {
+          paragraph "<span style='color: red;'>${state.authError}</span>"
+        }
       }
     }
 
     if (state.flairAccessToken != null) {
       section {
         input 'discoverDevices', 'button', title: 'Discover', submitOnChange: true
+        paragraph 'Discovered devices are listed below:'
       }
       listDiscoveredDevices()
 
@@ -108,9 +108,10 @@ def mainPage() {
           patchStructureData(['mode': 'auto'])
           atomicState.thermostat1Mode = 'auto'
         }
-        if (settings.thermostat1) {
-          unsubscribe(settings.thermostat1, 'thermostatOperatingState')
-          subscribe(settings.thermostat1, 'thermostatOperatingState', thermostat1ChangeStateHandler)
+        for (child in getChildDevices()) {
+          input "thermostat${child.getId()}", 
+            title: "Choose Thermostat for ${child.getLabel()} (Optional)",
+            multiple: false, required: false, 'capability.temperatureMeasurement'
         }
       }
     } else {
@@ -144,11 +145,13 @@ def listDiscoveredDevices() {
 
 def updated() {
   log.debug('Hubitat Flair App updating')
-  atomicState.remove('roomState')
+  atomicState.remove('ventsByRoomId')
+  initialize()
 }
 
 def installed() {
   log.debug('Hubitat Flair App installed')
+  initialize()
 }
 
 def uninstalled() {
@@ -158,8 +161,12 @@ def uninstalled() {
   unsubscribe()
 }
 
-def initialize(evt) {
-  log.debug(evt)
+def initialize() {
+  unsubscribe()
+  if (settings.thermostat1) {
+    subscribe(settings.thermostat1, 'thermostatOperatingState', thermostat1ChangeStateHandler)
+    subscribe(settings.thermostat1, 'temperature', thermostat1ChangeTemp)
+  }
 }
 
 // Helpers
@@ -187,14 +194,25 @@ private getPercentageOpen(ventIds) {
   percentOpen / ventIds.size()
 }
 
-private getRoomTemp(ventIds) {
+private getRoomTemp(ventId) {
+  def vent = getChildDevice(ventId)
+  def tempDevice = settings."thermostat${vent.getId()}"
+  if (tempDevice) {
+    def temp = tempDevice.currentValue('temperature')
+    if (settings.thermostat1TempUnit == '2') {
+      temp =  convertFahrenheitToCentigrades(temp)
+    }
+    log("Got temp from ${tempDevice.getLabel()} of ${temp}", 2)
+    return temp
+  }
+  return vent.currentValue('room-current-temperature-c')
+}
+
+private getAvgTemp(ventIds) {
   BigDecimal currentTemp = 0
   if (!ventIds || ventIds.size() == 0) { return currentTemp }
-  ventIds.each {
-    def vent = getChildDevice(it)
-    if (vent) {
-      currentTemp = currentTemp + vent.currentValue('room-current-temperature-c')
-    }
+  for (vent in ventIds) {
+    currentTemp = currentTemp + getRoomTemp(vent)
   }
   currentTemp / ventIds.size()
 }
@@ -206,8 +224,8 @@ private atomicStateUpdate(stateKey, key, value) {
 
 def getThermostatSetpoint(hvacMode) {
   BigDecimal setpoint = hvacMode == COOLING ?
-     thermostat1.currentValue('coolingSetpoint') :
-     thermostat1.currentValue('heatingSetpoint')
+     thermostat1.currentValue('coolingSetpoint') - SETPOINT_OFFSET_C :
+     thermostat1.currentValue('heatingSetpoint') + SETPOINT_OFFSET_C
   setpoint = setpoint ?: thermostat1.currentValue('thermostatSetpoint')
   if (!setpoint) {
     log.error('Thermostat has no setpoint property, please choose a vaid thermostat')
@@ -246,6 +264,11 @@ def hasRoomReachedSetpoint(hvacMode, setpoint, currentVentTemp) {
   (hvacMode == HEATING && currentVentTemp >= setpoint)
 }
 
+def calculateHvacMode(temp, coolingSetpoint, heatingSetpoint) {
+  Math.abs(temp - coolingSetpoint) < Math.abs(temp - heatingSetpoint) ?
+    COOLING : HEATING
+}
+
 void removeChildren() {
   def children = getChildDevices()
   log("Deleting all child devices: ${children}", 2)
@@ -253,6 +276,15 @@ void removeChildren() {
     if (it != null) {
       deleteChildDevice it.getDeviceNetworkId()
     }
+  }
+}
+
+private logDetails(msg, details = null, level = 3) {
+  def settingsLevel = (settings?.debugLevel).toInteger()
+  if (!details || (settingsLevel == 3 && level >= 2)) {
+    log(msg, level)
+  } else {
+    log("${msg}\n${details}", level)
   }
 }
 
@@ -280,6 +312,25 @@ def isValidResponse(resp) {
   return true
 }
 
+def getData(uri, handler, data = null) {
+  def headers = [ Authorization: 'Bearer ' + state.flairAccessToken ]
+  def contentType = CONTENT_TYPE
+  def httpParams = [
+    uri: uri, headers: headers, contentType: contentType,
+    timeout: HTTP_TIMEOUT_SECS,
+    query: data
+  ]
+  try {
+    httpGet(httpParams) { resp ->
+      if (resp.success) {
+        handler(resp, resp.data)
+      }
+    }
+  } catch (e) {
+    log.warn "httpGet call failed: ${e.message}"
+  }
+}
+
 def getDataAsync(uri, handler, data = null) {
   def headers = [ Authorization: 'Bearer ' + state.flairAccessToken ]
   def contentType = CONTENT_TYPE
@@ -299,7 +350,7 @@ def patchDataAsync(uri, handler, body, data = null) {
      body: groovy.json.JsonOutput.toJson(body)
   ]
   asynchttpPatch(handler, httpParams, data)
-  log("patchDataAsync:${uri}, body:${body}", 2)
+  logDetails("patchDataAsync: ${uri}", "body:${body}", 2)
 }
 
 def login() {
@@ -337,6 +388,11 @@ def handleAuthResponse(resp) {
 
 def appButtonHandler(btn) {
   switch (btn) {
+    case 'authenticate':
+      login()
+      unschedule(login)
+      runEvery1Hour login
+      break
     case 'discoverDevices':
       discover()
       break
@@ -408,7 +464,7 @@ def traitExtract(device, details, propNameData, propNameDriver = propNameData, u
 }
 
 def processVentTraits(device, details) {
-  log("Processing Vent data for ${device}: ${details}", 1)
+  logDetails("Processing Vent data for ${device}", details, 1)
 
   if (!details.data) { return }
   traitExtract(device, details, 'firmware-version-s')
@@ -427,7 +483,7 @@ def processVentTraits(device, details) {
 }
 
 def processRoomTraits(device, details) {
-  log("Processing Room data for ${device}: ${details}", 1)
+  logDetails("Processing Room data for ${device}", details, 1)
 
   if (!details?.data) { return }
   def roomId = details.data.id
@@ -523,17 +579,20 @@ def handleStructureGet(resp, data) {
 }
 
 def patchVent(device, percentOpen) {
-  log("Setting percent open for ${device} to ${percentOpen}%", 3)
   def pOpen = percentOpen
   if (pOpen > 100) {
     pOpen = 100
+    log.warn('Trying to set vent open percentage to inavlid value')
   } else if (pOpen  < 0) {
     pOpen = 0
+    log.warn('Trying to set vent open percentage to inavlid value')
   }
   def currPercentOpen = (device.currentValue('percent-open')).toInteger()
   if (percentOpen == currPercentOpen) {
+    log("Keeping percent open for ${device} unchanged to ${percentOpen}%", 3)
     return
   }
+  log("Setting percent open for ${device} from ${currPercentOpen} to ${percentOpen}%", 3)
 
   def deviceId = device.getDeviceNetworkId()
   def uri = BASE_URL + '/api/vents/' + deviceId
@@ -577,6 +636,36 @@ def patchRoom(device, active) {
 def handleRoomPatch(resp, data) {
   if (!isValidResponse(resp)) { return }
   traitExtract(data.device, resp.getJson(), 'active', 'room-active')
+}
+
+def thermostat1ChangeTemp(evt) {
+  log("thermostat changed temp to:${evt.value}", 2)
+  def temp = thermostat1.currentValue('temperature')
+  def coolingSetpoint = thermostat1.currentValue('coolingSetpoint')
+  def heatingSetpoint = thermostat1.currentValue('heatingSetpoint')
+  String hvacMode = calculateHvacMode(temp, coolingSetpoint, heatingSetpoint)
+  def thermostatSetpoint = getThermostatSetpoint(hvacMode)
+  if (isThermostatAboutToChangeState(hvacMode, thermostatSetpoint, temp)) {
+    unschedule(initializeRoomStates)
+    runInMillis(3000, 'initializeRoomStates', [data: hvacMode])
+  }
+}
+
+def isThermostatAboutToChangeState(hvacMode, setpoint, temp) {
+  if (hvacMode == COOLING && temp + SETPOINT_OFFSET_C - VENT_PRE_ADJUSTMENT_THRESHOLD_C < setpoint) {
+    atomicState.tempDiffsInsideThreshold = false
+    return false
+  } else  if (hvacMode == HEATING && temp - SETPOINT_OFFSET_C + VENT_PRE_ADJUSTMENT_THRESHOLD_C > setpoint) {
+    atomicState.tempDiffsInsideThreshold = false
+    return false
+  }
+  if (atomicState.tempDiffsInsideThreshold == true) {
+    return false
+  }
+  atomicState.tempDiffsInsideThreshold = true
+  log('Pre-adjusting vents for upcoming HVAC start. ' +
+    "[mode=${hvacMode}, setpoint=${setpoint}, temp=${temp}]", 3)
+  return true
 }
 
 def thermostat1ChangeStateHandler(evt) {
@@ -639,11 +728,11 @@ def finalizeRoomStates(data) {
           def vent = getChildDevice(ventId)
           if (!vent) { break }
           def percentOpen = getPercentageOpen(ventIds)
-          BigDecimal currentTemp = getRoomTemp(ventIds)
+          BigDecimal currentTemp = getAvgTemp(ventIds)
           BigDecimal lastStartTemp = vent.currentValue('room-starting-temperature-c')
           def newRate = calculateRoomChangeRate(lastStartTemp, currentTemp, totalMinutes, percentOpen)
           if (newRate < 0) { break }
-          def ratePropName = hvacMode == COOLING ? 'room-cooling-rate' : 'room-heating-rate'
+          def ratePropName = data.hvacMode == COOLING ? 'room-cooling-rate' : 'room-heating-rate'
           def currentRate = vent.currentValue(ratePropName)
           def rate = rollingAverage(currentRate, newRate, percentOpen / 100)
           sendEvent(vent, [name: ratePropName, value: rate])
@@ -665,7 +754,7 @@ def initializeRoomStates(hvacMode) {
   // Get the target temperature from the thermostat
   BigDecimal setpoint = getThermostatSetpoint(hvacMode)
   if (!setpoint) { return }
-  def rateAndTempPerVentId = getAttribsPerVentId(atomicState.ventsByRoomId)
+  def rateAndTempPerVentId = getAttribsPerVentId(atomicState.ventsByRoomId, hvacMode)
 
   // Get longest time to reach to target temp
   def maxRunningTime = atomicState.maxHvacRunningTime ?: MAX_MINUTES_TO_SETPOINT
@@ -694,6 +783,8 @@ def initializeRoomStates(hvacMode) {
   // Ensure mimimum combined vent flow across vents
   calculatedPercentOpenPerVentId = adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId, hvacMode,
     calculatedPercentOpenPerVentId, settings.thermostat1AdditionalStandardVents)
+
+  unschedule(initializeRoomStates)
 
   // Apply open percentage across all vents
   calculatedPercentOpenPerVentId.each { ventId, percentOpen ->
@@ -759,7 +850,7 @@ def adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId, hvacMod
   return calculatedPercentOpenPerVentId
 }
 
-def getAttribsPerVentId(ventIdsByRoomId) {
+def getAttribsPerVentId(ventIdsByRoomId, hvacMode) {
   def rateAndTempPerVentId = [:]
   ventIdsByRoomId.each { roomId, ventIds ->
     for (ventId in ventIds) {
@@ -773,7 +864,7 @@ def getAttribsPerVentId(ventIdsByRoomId) {
         def isRoomActive = vent.currentValue('room-active') == 'true'
         rateAndTempPerVentId."${ventId}" = [
           'rate':  rate,
-          'temp': vent.currentValue('room-current-temperature-c'),
+          'temp': getRoomTemp(ventId),
           'active': isRoomActive,
           'name': vent.currentValue('room-name')
         ]
@@ -797,7 +888,7 @@ def calculateOpenPercentageForAllVents(rateAndTempPerVentId,
         log("Opening vents at max since change rate is lower than minumal: ${stateVal.name}", 3)
         percentageOpen = MAX_PERCENTAGE_OPEN
       } else {
-        percentageOpen = calculateVentOpenPercentange(stateVal.temp, setpoint, hvacMode,
+        percentageOpen = calculateVentOpenPercentange(stateVal.name, stateVal.temp, setpoint, hvacMode,
           stateVal.rate, longestTimeToGetToTarget)
       }
       calculatedPercentOpenPerVentId."${ventId}" = percentageOpen
@@ -808,10 +899,10 @@ def calculateOpenPercentageForAllVents(rateAndTempPerVentId,
   return calculatedPercentOpenPerVentId
 }
 
-def calculateVentOpenPercentange(startTemp, setpoint, hvacMode, maxRate, longestTimeToGetToTarget) {
+def calculateVentOpenPercentange(room, startTemp, setpoint, hvacMode, maxRate, longestTimeToGetToTarget) {
   if (hasRoomReachedSetpoint(hvacMode, setpoint, startTemp)) {
     def msgTemp = hvacMode == COOLING ? 'cooler' : 'warmer'
-    log("Room is already ${msgTemp} (${startTemp}) than setpoint (${setpoint})", 3)
+    log("'${room}' is already ${msgTemp} (${startTemp}) than setpoint (${setpoint})", 3)
     return MIN_PERCENTAGE_OPEN
   }
   def percentageOpen = MAX_PERCENTAGE_OPEN
@@ -819,7 +910,7 @@ def calculateVentOpenPercentange(startTemp, setpoint, hvacMode, maxRate, longest
     def targetRate = Math.abs(setpoint - startTemp) / longestTimeToGetToTarget
     percentageOpen = BASE_CONST * Math.exp((-targetRate * Math.log(BASE_CONST)) / maxRate)
     percentageOpen = roundBigDecimal(percentageOpen * 100)
-    log("percentageOpen: (${percentageOpen})", 1)
+    log("changing percentage open for ${room} to ${percentageOpen}% (maxRate=${maxRate})", 3)
     if (percentageOpen < MIN_PERCENTAGE_OPEN) {
       percentageOpen = MIN_PERCENTAGE_OPEN
     } else if (percentageOpen > MAX_PERCENTAGE_OPEN) {

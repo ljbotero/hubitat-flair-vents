@@ -56,6 +56,9 @@
         "NoDef": {
             "enabled": false
         },
+        "ParameterCount": {
+            "enabled": false
+        },
         "PublicMethodsBeforeNonPublicMethods": {
             "enabled": false
         },

@@ -64,7 +64,7 @@ class Test extends Specification {
         '001': ['occupancy': 'occupied', 'temperature': 82.0],
         '002': ['occupancy': 'occupied', 'temperature': 85.0],
         '003': ['occupancy': 'occupied', 'temperature': 87.0]
-      ], 70, 80, true) == ['003':true]
+      ], 70, 80, true) == ['002':true, '003':true]
 
     script.recalculateSensorParticipationInit([
         '001': ['occupancy': 'occupied', 'temperature': 74.0],

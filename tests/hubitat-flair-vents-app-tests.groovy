@@ -27,6 +27,23 @@ class Test extends Specification {
         String arg1, String arg2, AbstractMap arg3 -> '' }
   }
 
+  def "calculateHvacModeTest"() {
+    setup:
+    AppExecutor executorApi = Mock {
+      _   * getState() >> [:]
+    }
+    def sandbox = new HubitatAppSandbox(APP_FILE)
+    def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+
+    expect:
+    script.calculateHvacMode(80.0, 80.0, 70.0) == 'cooling'
+    script.calculateHvacMode(70.0, 80.0, 70.0) == 'heating'
+
+    script.calculateHvacMode(81.0, 80.0, 70.0) == 'cooling'
+    script.calculateHvacMode(69.0, 80.0, 70.0) == 'heating'
+  }
+
+
   def "hasRoomReachedSetpointTest"() {
     setup:
     AppExecutor executorApi = Mock {
@@ -161,15 +178,15 @@ class Test extends Specification {
     expect:
     def expectedVals = [5.354, 30.238, 67.911, 0.278, 0.393, 0.156, 0.141, 4.276, 100.0]
     def retVals = [
-      script.calculateVentOpenPercentange(65, 70, 'heating', 0.715, 12.6),
-      script.calculateVentOpenPercentange(61, 70, 'heating', 0.550, 20),
-      script.calculateVentOpenPercentange(98, 82, 'cooling', 0.850, 20),
-      script.calculateVentOpenPercentange(84, 82, 'cooling', 0.950, 20),
-      script.calculateVentOpenPercentange(85, 82, 'cooling', 0.950, 20),
-      script.calculateVentOpenPercentange(86, 82, 'cooling', 2.5, 90),
-      script.calculateVentOpenPercentange(87, 82, 'cooling', 2.5, 900),
-      script.calculateVentOpenPercentange(87, 85, 'cooling', 0.384, 10),
-      script.calculateVentOpenPercentange(87, 85, 'cooling', 0, 10)
+      script.calculateVentOpenPercentange('', 65, 70, 'heating', 0.715, 12.6),
+      script.calculateVentOpenPercentange('', 61, 70, 'heating', 0.550, 20),
+      script.calculateVentOpenPercentange('', 98, 82, 'cooling', 0.850, 20),
+      script.calculateVentOpenPercentange('', 84, 82, 'cooling', 0.950, 20),
+      script.calculateVentOpenPercentange('', 85, 82, 'cooling', 0.950, 20),
+      script.calculateVentOpenPercentange('', 86, 82, 'cooling', 2.5, 90),
+      script.calculateVentOpenPercentange('', 87, 82, 'cooling', 2.5, 900),
+      script.calculateVentOpenPercentange('', 87, 85, 'cooling', 0.384, 10),
+      script.calculateVentOpenPercentange('', 87, 85, 'cooling', 0, 10)
     ]
     expectedVals == retVals
   }
@@ -187,10 +204,10 @@ class Test extends Specification {
           'userSettingValues': USER_SETTINGS)
 
     expect:
-    script.calculateVentOpenPercentange(75, 70, 'heating', 0.1, 1) == 0
-    log.records[0] == new Tuple(Level.debug, 'Room is already warmer (75) than setpoint (70)')
-    script.calculateVentOpenPercentange(75, 80, 'cooling', 0.1, 1) == 0
-    log.records[1] == new Tuple(Level.debug, 'Room is already cooler (75) than setpoint (80)')
+    script.calculateVentOpenPercentange('', 75, 70, 'heating', 0.1, 1) == 0
+    log.records[0] == new Tuple(Level.debug, "'' is already warmer (75) than setpoint (70)")
+    script.calculateVentOpenPercentange('', 75, 80, 'cooling', 0.1, 1) == 0
+    log.records[1] == new Tuple(Level.debug, "'' is already cooler (75) than setpoint (80)")
   }
 
   def "adjustVentOpeningsToEnsureMinimumAirflowTarget() - empty state"() {
@@ -250,9 +267,9 @@ class Test extends Specification {
     expect:
     script.adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId,  'cooling',
       percentPerVentId, 0) == ['122127': 30.5]
-    log.records.size == 19
+    log.records.size == 36
     log.records[0] == new Tuple(Level.debug, 'Combined Vent Flow Percentage (5) is lower than 30.0%')
-    log.records[11] == new Tuple(Level.debug, 'Adjusting % open from 18.500% to 20.000%')
+    log.records[11] == new Tuple(Level.debug, 'Adjusting % open from 11.750% to 12.500%')
   }
 
   def "adjustVentOpeningsToEnsureMinimumAirflowTargetTest - multiple vents"() {
@@ -288,19 +305,19 @@ class Test extends Specification {
 
     expect:
     def newPercentPerVentId = [
-      '122127':26.5,
-      '122129':5.71428571400,
-      '122128':17.85714285700,
-      '122133':28.57142857150,
+      '122127':26.33823529360,
+      '122129':5.16176470640,
+      '122128':18.25,
+      '122133':28.08823529350,
       '129424':100,
-      '122132':18.57142857200,
-      '122131':14.28571428500
+      '122132':18.38235294050,
+      '122131':13.97058823550
     ]
     script.adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId,  'cooling',
       percentPerVentId, 0) == newPercentPerVentId
-    log.records.size == 63
+    log.records.size == 65
     log.records[0] == new Tuple(Level.debug, 'Combined Vent Flow Percentage (22.8571428571) is lower than 30.0%')
-    log.records[8] == new Tuple(Level.debug, 'Adjusting % open from 11.500% to 13.000%')
+    log.records[8] == new Tuple(Level.debug, 'Adjusting % open from 11.485% to 12.971%')
   }
 
   def "adjustVentOpeningsToEnsureMinimumAirflowTargetTest - multiple vents and conventional vents"() {
@@ -335,13 +352,13 @@ class Test extends Specification {
 
     expect:
     def newPercentPerVentId = [
-      '122127':24.0,
-      '122129':6.14285714240,
-      '122128':12.57142857120,
-      '122133':10.35714285725,
-      '129424':38.21428571375,
-      '122132':20.35714285800,
-      '122131':18.92857142750
+      '122127':23.76470588160,
+      '122129':5.23529411840,
+      '122128':12.00,
+      '122133':9.94117646960,
+      '129424':39.05882353040,
+      '122132':21.41176470480,
+      '122131':19.35294117680
     ]
     script.adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId,  'cooling',
       percentPerVentId, 4) == newPercentPerVentId
