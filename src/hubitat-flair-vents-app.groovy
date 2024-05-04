@@ -39,8 +39,9 @@ import groovy.transform.Field
 @Field static Integer MAX_NUMBER_OF_STANDARD_VENTS = 15
 @Field static Integer MAX_ITERATIONS = 500
 @Field static Integer HTTP_TIMEOUT_SECS = 5
-@Field static BigDecimal BASE_CONST = 0.0895 //0.0225 //0.00139
-@Field static BigDecimal EXP_CONST = 2.44 //3.79 // 6.58
+@Field static BigDecimal BASE_CONST = 0.0708 //0.0895 //0.0225 //0.00139
+@Field static BigDecimal EXP_CONST = 3.14 //2.44 //3.79 // 6.58
+@Field static String AC_BOOSTER_LINK = 'https://amzn.to/3QwVGbs'
 
 definition(
     name: 'Flair Vents',
@@ -80,7 +81,6 @@ def mainPage() {
     if (state.flairAccessToken != null) {
       section {
         input 'discoverDevices', 'button', title: 'Discover', submitOnChange: true
-        paragraph 'Discovered devices are listed below:'
       }
       listDiscoveredDevices()
 
@@ -129,24 +129,74 @@ def mainPage() {
 
 def listDiscoveredDevices() {
   def children = getChildDevices()
-  def builder = new StringBuilder()
-  builder << '<ul>'
-  children.each {
-    if (it != null) {
-      builder << "<li><a href='/device/edit/${it.getId()}'>${it.getLabel()}</a></li>"
+  BigDecimal maxCoolEfficiency = 0
+  BigDecimal maxHeatEfficiency = 0
+  for (vent in children) {
+    def coolingRate = vent.currentValue('room-cooling-rate')
+    def heatingRate = vent.currentValue('room-heating-rate')
+    if (maxCoolEfficiency < coolingRate) {
+      maxCoolEfficiency = coolingRate
+    }
+    if (maxHeatEfficiency < heatingRate) {
+      maxHeatEfficiency = heatingRate
     }
   }
-  builder << '</ul>'
+
+  def builder = new StringBuilder()
+  builder << '<style>' +
+      '.device-table { width: 100%; border-collapse: collapse; font-family: Arial, sans-serif; color: black; }' +
+      '.device-table th, .device-table td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }' +
+      '.device-table th { background-color: #f2f2f2; color: #333; }' +
+      '.device-table tr:hover { background-color: #f5f5f5; }' +
+      '.device-table a { color: #333; text-decoration: none; }' +
+      '.device-table a:hover { color: #666; }' +
+      '.device-table th:not(:first-child), .device-table td:not(:first-child) { text-align: center; }' +
+      '.warning-message { color: darkorange; cursor: pointer; }' +
+      '.danger-message { color: red; cursor: pointer; }' +
+    '</style>' +
+    '<table class="device-table">' +
+      '<thead>' +
+      '  <tr>' +
+      '    <th></th>' +
+      '    <th colspan="2">Efficiency</th>' +
+      '  </tr>' +
+      '  <tr>' +
+      '    <th rowspan="2">Device</th>' +
+      '    <th>Cooling</th>' +
+      '    <th>Heating</th>' +
+      '  </tr>' +
+      '</thead>' +
+      '<tbody>'
+  children.each {
+    if (it != null) {
+      def coolingRate = it.currentValue('room-cooling-rate')
+      def heatingRate = it.currentValue('room-heating-rate')
+      def coolEfficiency = maxCoolEfficiency > 0 ? roundBigDecimal((coolingRate / maxCoolEfficiency) * 100, 0) : 0
+      def heatEfficiency = maxHeatEfficiency > 0 ? roundBigDecimal((heatingRate / maxHeatEfficiency) * 100, 0) : 0
+
+      def coolClass = coolEfficiency <= 0 ? '' : coolEfficiency <= 25 ? 'danger-message' : coolEfficiency <= 45 ? 'warning-message' : ''
+      def heatClass = heatEfficiency <= 0 ? '' : heatEfficiency <= 25 ? 'danger-message' : heatEfficiency <= 45 ? 'warning-message' : ''      
+      def warnMsg = 'This vent is very inefficient, consider installing an HVAC booster'
+
+      def coolPopupHtml = coolEfficiency <= 45 ?
+        "<span class='${coolClass}' onclick=\"window.open('${AC_BOOSTER_LINK}');\" title='${warnMsg}'>${coolEfficiency}%</span>" : "${coolEfficiency}%"
+      def heatPopupHtml = heatEfficiency <= 45 ?
+        "<span class='${heatClass}' onclick=\"window.open('${AC_BOOSTER_LINK}');\" title='${warnMsg}'>${heatEfficiency}%</span>" : "${heatEfficiency}%"
+
+      builder << "<tr><td><a href='/device/edit/${it.getId()}'>${it.getLabel()}</a>" +
+        "</td><td>${coolPopupHtml}</td><td>${heatPopupHtml}</td></tr>"
+    }
+  }
+  builder << '</table>'
   def links = builder.toString()
   section {
-    paragraph 'Discovered devices are listed below:'
+    paragraph 'Discovered devices:'
     paragraph links
   }
 }
 
 def updated() {
   log.debug('Hubitat Flair App updating')
-  atomicState.remove('ventsByRoomId')
   initialize()
 }
 
@@ -167,6 +217,12 @@ def initialize() {
   if (settings.thermostat1) {
     subscribe(settings.thermostat1, 'thermostatOperatingState', thermostat1ChangeStateHandler)
     subscribe(settings.thermostat1, 'temperature', thermostat1ChangeTemp)
+
+    def temp = thermostat1.currentValue('temperature')
+    def coolingSetpoint = thermostat1.currentValue('coolingSetpoint')
+    def heatingSetpoint = thermostat1.currentValue('heatingSetpoint')
+    String hvacMode = calculateHvacMode(temp, coolingSetpoint, heatingSetpoint)
+    runInMillis(3000, 'initializeRoomStates', [data: hvacMode])
   }
 }
 
@@ -380,6 +436,7 @@ def appButtonHandler(btn) {
 
 private void discover() {
   log('Discovery started', 3)
+  atomicState.remove('ventsByRoomId')
   def uri = BASE_URL + '/api/vents'
   getDataAsync(uri, handleDeviceList)
 }
