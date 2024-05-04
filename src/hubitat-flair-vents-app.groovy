@@ -24,22 +24,23 @@ import groovy.transform.Field
 @Field static String HEATING = 'heating'
 @Field static String PENDING_COOL = 'pending cool'
 @Field static String PENDING_HEAT = 'pending heat'
+@Field static Integer MILLIS_DELAY_TEMP_READINGS = 1000 * 30
 @Field static BigDecimal MIN_PERCENTAGE_OPEN = 0.0
 @Field static BigDecimal VENT_PRE_ADJUSTMENT_THRESHOLD_C = 0.2
 @Field static BigDecimal ROOM_RATE_CALC_MIN_MINUTES = 2.5
 @Field static BigDecimal MAX_PERCENTAGE_OPEN = 100.0
 @Field static BigDecimal MAX_MINUTES_TO_SETPOINT = 60
-@Field static BigDecimal MIN_MINUTES_TO_SETPOINT = 4
+@Field static BigDecimal MIN_MINUTES_TO_SETPOINT = 5
 @Field static BigDecimal SETPOINT_OFFSET_C = 0.7
-@Field static BigDecimal MAX_TEMP_CHANGE_RATE_C = 2.0
+@Field static BigDecimal MAX_TEMP_CHANGE_RATE_C = 1.5
 @Field static BigDecimal MIN_TEMP_CHANGE_RATE_C = 0.001
 @Field static BigDecimal MIN_COMBINED_VENT_FLOW_PERCENTAGE = 30.0
 @Field static BigDecimal INREMENT_PERCENTAGE_WHEN_REACHING_VENT_FLOW_TAGET = 1.5
 @Field static Integer MAX_NUMBER_OF_STANDARD_VENTS = 15
 @Field static Integer MAX_ITERATIONS = 500
 @Field static Integer HTTP_TIMEOUT_SECS = 5
-@Field static BigDecimal BASE_CONST = 0.00139
-@Field static BigDecimal EXP_CONST = 6.58
+@Field static BigDecimal BASE_CONST = 0.0895 //0.0225 //0.00139
+@Field static BigDecimal EXP_CONST = 2.44 //3.79 // 6.58
 
 definition(
     name: 'Flair Vents',
@@ -182,20 +183,7 @@ private openAllVents(ventIdsByRoomId, percentOpen) {
   }
 }
 
-private getPercentageOpen(ventIds) {
-  def percentOpen = 0
-  if (!ventIds || ventIds.size() == 0) { return percentOpen }
-  ventIds.each {
-    def vent = getChildDevice(it)
-    if (vent) {
-      percentOpen = percentOpen + (vent.currentValue('percent-open')).toInteger()
-    }
-  }
-  percentOpen / ventIds.size()
-}
-
-private getRoomTemp(ventId) {
-  def vent = getChildDevice(ventId)
+private getRoomTemp(vent) {
   def tempDevice = settings."thermostat${vent.getId()}"
   if (tempDevice) {
     def temp = tempDevice.currentValue('temperature')
@@ -206,15 +194,6 @@ private getRoomTemp(ventId) {
     return temp
   }
   return vent.currentValue('room-current-temperature-c')
-}
-
-private getAvgTemp(ventIds) {
-  BigDecimal currentTemp = 0
-  if (!ventIds || ventIds.size() == 0) { return currentTemp }
-  for (vent in ventIds) {
-    currentTemp = currentTemp + getRoomTemp(vent)
-  }
-  currentTemp / ventIds.size()
 }
 
 private atomicStateUpdate(stateKey, key, value) {
@@ -646,7 +625,6 @@ def thermostat1ChangeTemp(evt) {
   String hvacMode = calculateHvacMode(temp, coolingSetpoint, heatingSetpoint)
   def thermostatSetpoint = getThermostatSetpoint(hvacMode)
   if (isThermostatAboutToChangeState(hvacMode, thermostatSetpoint, temp)) {
-    unschedule(initializeRoomStates)
     runInMillis(3000, 'initializeRoomStates', [data: hvacMode])
   }
 }
@@ -686,14 +664,10 @@ def thermostat1ChangeStateHandler(evt) {
       atomicStateUpdate('thermostat1State', 'mode', hvacMode)
       atomicStateUpdate('thermostat1State', 'startTime', now())
       unschedule(initializeRoomStates)
-      unschedule(checkActiveRooms)
       runInMillis(1000, 'initializeRoomStates', [data: hvacMode]) // wait a bit since setpoint is set a few ms later
-      if (settings.thermostat1CloseInactiveRooms == true) {
-        runEvery5Minutes('checkActiveRooms')
-      }
       break
      default:
-      unschedule(checkActiveRooms)
+      unschedule(initializeRoomStates)
       if (atomicState.thermostat1State)  {
         unschedule(finalizeRoomStates)
         atomicStateUpdate('thermostat1State', 'endTime', now())
@@ -704,7 +678,7 @@ def thermostat1ChangeStateHandler(evt) {
             hvacMode: atomicState.thermostat1State?.mode
         ]
         // Run a minute after to get more accurate temp readings
-        runInMillis(1000 * 60, 'finalizeRoomStates', [data: params])
+        runInMillis(MILLIS_DELAY_TEMP_READINGS, 'finalizeRoomStates', [data: params])
       }
       break
   }
@@ -720,24 +694,22 @@ def finalizeRoomStates(data) {
   log('Finalizing room states', 3)
   def totalMinutes = (data.endTime - data.startTime) / (1000 * 60)
   log("HVAC ran for ${totalMinutes} minutes", 3)
-  atomicState.maxHvacRunningTime = rollingAverage(atomicState.maxHvacRunningTime, totalMinutes)
+  atomicState.maxHvacRunningTime = roundBigDecimal(rollingAverage(atomicState.maxHvacRunningTime, totalMinutes), 6)
   if (totalMinutes >= ROOM_RATE_CALC_MIN_MINUTES) {
     data.ventIdsByRoomId.each { roomId, ventIds ->
       for (ventId in ventIds) {
         try {
           def vent = getChildDevice(ventId)
           if (!vent) { break }
-          def percentOpen = getPercentageOpen(ventIds)
-          BigDecimal currentTemp = getAvgTemp(ventIds)
+          def percentOpen = (vent.currentValue('percent-open')).toInteger()
+          BigDecimal currentTemp = getRoomTemp(vent)
           BigDecimal lastStartTemp = vent.currentValue('room-starting-temperature-c')
           def newRate = calculateRoomChangeRate(lastStartTemp, currentTemp, totalMinutes, percentOpen)
-          if (newRate < 0) { break }
+          if (newRate <= 0) { break }
           def ratePropName = data.hvacMode == COOLING ? 'room-cooling-rate' : 'room-heating-rate'
           def currentRate = vent.currentValue(ratePropName)
-          def rate = rollingAverage(currentRate, newRate, percentOpen / 100)
+          def rate = rollingAverage(currentRate, newRate, percentOpen / 100, 4)
           sendEvent(vent, [name: ratePropName, value: rate])
-          // def roomName = vent.currentValue('room-name')
-          // log("'${roomName}': currentRate: ${roundBigDecimal(currentRate)}, rollingRate: ${roundBigDecimal(rate)}", 3)
         } catch (err) {
           log.error(err)
         }
@@ -759,7 +731,8 @@ def initializeRoomStates(hvacMode) {
   // Get longest time to reach to target temp
   def maxRunningTime = atomicState.maxHvacRunningTime ?: MAX_MINUTES_TO_SETPOINT
   def longestTimeToGetToTarget = calculateLongestMinutesToTarget(
-    rateAndTempPerVentId, hvacMode, setpoint, maxRunningTime)
+    rateAndTempPerVentId, hvacMode, setpoint, maxRunningTime,
+    settings.thermostat1CloseInactiveRooms)
   if (longestTimeToGetToTarget < 0) {
     log("All vents already reached setpoint (setpoint: ${setpoint})", 3)
     longestTimeToGetToTarget = maxRunningTime
@@ -769,7 +742,7 @@ def initializeRoomStates(hvacMode) {
     openAllVents(atomicState.ventsByRoomId, MAX_PERCENTAGE_OPEN)
     return
   }
-  log("Initializing room states - setpoint: ${setpoint}, longestTimeToGetToTarget: ${longestTimeToGetToTarget}", 3)
+  log("Initializing room states - setpoint: ${setpoint}, longestTimeToGetToTarget: ${roundBigDecimal(longestTimeToGetToTarget)}", 3)
 
   def calculatedPercentOpenPerVentId = calculateOpenPercentageForAllVents(
     rateAndTempPerVentId, hvacMode, setpoint, longestTimeToGetToTarget,
@@ -783,8 +756,6 @@ def initializeRoomStates(hvacMode) {
   // Ensure mimimum combined vent flow across vents
   calculatedPercentOpenPerVentId = adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId, hvacMode,
     calculatedPercentOpenPerVentId, settings.thermostat1AdditionalStandardVents)
-
-  unschedule(initializeRoomStates)
 
   // Apply open percentage across all vents
   calculatedPercentOpenPerVentId.each { ventId, percentOpen ->
@@ -864,7 +835,7 @@ def getAttribsPerVentId(ventIdsByRoomId, hvacMode) {
         def isRoomActive = vent.currentValue('room-active') == 'true'
         rateAndTempPerVentId."${ventId}" = [
           'rate':  rate,
-          'temp': getRoomTemp(ventId),
+          'temp': getRoomTemp(vent),
           'active': isRoomActive,
           'name': vent.currentValue('room-name')
         ]
@@ -908,9 +879,9 @@ def calculateVentOpenPercentange(room, startTemp, setpoint, hvacMode, maxRate, l
   def percentageOpen = MAX_PERCENTAGE_OPEN
   if (maxRate > 0 && longestTimeToGetToTarget > 0) {
     def targetRate = Math.abs(setpoint - startTemp) / longestTimeToGetToTarget
-    percentageOpen = BASE_CONST * Math.exp((-targetRate * Math.log(BASE_CONST)) / maxRate)
+    percentageOpen = BASE_CONST * Math.exp((targetRate / maxRate) * EXP_CONST)
     percentageOpen = roundBigDecimal(percentageOpen * 100)
-    log("changing percentage open for ${room} to ${percentageOpen}% (maxRate=${maxRate})", 3)
+    log("changing percentage open for ${room} to ${percentageOpen}% (maxRate=${roundBigDecimal(maxRate)})", 3)
     if (percentageOpen < MIN_PERCENTAGE_OPEN) {
       percentageOpen = MIN_PERCENTAGE_OPEN
     } else if (percentageOpen > MAX_PERCENTAGE_OPEN) {
@@ -920,35 +891,16 @@ def calculateVentOpenPercentange(room, startTemp, setpoint, hvacMode, maxRate, l
   return percentageOpen
 }
 
-def checkActiveRooms() {
-  if (!atomicState.ventsByRoomId) { return }
-  atomicState.ventsByRoomId.each { roomId, ventIds ->
-    for (ventId in ventIds) {
-      try {
-        def vent = getChildDevice(ventId)
-        if (!vent) { break }
-        boolean isRoomActive = vent.currentValue('room-active') == 'true'
-        def currPercentOpen = (vent.currentValue('percent-open')).toInteger()
-        if (settings.thermostat1CloseInactiveRooms == true &&
-          !isRoomActive && currPercentOpen > MIN_PERCENTAGE_OPEN) {
-          String roomName = vent.currentValue('room-name')
-          log("Closing vent on inactive room (${roomName})", 3)
-          patchVent(vent, MIN_PERCENTAGE_OPEN)
-        }
-      } catch (err) {
-        log.error(err)
-      }
-    }
-  }
-}
-
-def calculateLongestMinutesToTarget(rateAndTempPerVentId, hvacMode, setpoint, maxRunningTime) {
+def calculateLongestMinutesToTarget(rateAndTempPerVentId, hvacMode, setpoint, maxRunningTime,
+  closeInactiveRooms = true) {
   def longestTimeToGetToTarget = -1
   rateAndTempPerVentId.each { ventId, stateVal ->
     try {
       def minutesToTarget = -1
       def rate = stateVal.rate
-      if (hasRoomReachedSetpoint(hvacMode, setpoint, stateVal.temp)) {
+      if (closeInactiveRooms == true && !stateVal.active) {
+        log("'${stateVal.name}' is inactive", 3)
+      } else if (hasRoomReachedSetpoint(hvacMode, setpoint, stateVal.temp)) {
         log("'${stateVal.name}' has already reached  setpoint", 3)
       } else if (rate > 0) {
         minutesToTarget = Math.abs(setpoint - stateVal.temp) / rate
@@ -956,8 +908,8 @@ def calculateLongestMinutesToTarget(rateAndTempPerVentId, hvacMode, setpoint, ma
         minutesToTarget = 0
       }
       if (minutesToTarget > maxRunningTime) {
-        log.warn("'${stateVal.name}' is estimated to take ${minutesToTarget} minutes " +
-          "to reach target temp, which is longer than the average ${maxRunningTime} minutes")
+        log.warn("'${stateVal.name}' is estimated to take ${roundBigDecimal(minutesToTarget)} minutes " +
+          "to reach target temp, which is longer than the average ${roundBigDecimal(maxRunningTime)} minutes")
         minutesToTarget = maxRunningTime
       }
       if (longestTimeToGetToTarget < minutesToTarget) {
