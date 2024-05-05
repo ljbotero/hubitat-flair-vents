@@ -721,7 +721,8 @@ def thermostat1ChangeStateHandler(evt) {
       atomicStateUpdate('thermostat1State', 'mode', hvacMode)
       atomicStateUpdate('thermostat1State', 'startTime', now())
       unschedule(initializeRoomStates)
-      runInMillis(1000, 'initializeRoomStates', [data: hvacMode]) // wait a bit since setpoint is set a few ms later
+      runInMillis(1000, 'initializeRoomStates', [data: hvacMode]) // wait a bit since setpoint is set a few ms later      
+      recordStartingTemperatures()
       break
      default:
       unschedule(initializeRoomStates)
@@ -774,6 +775,22 @@ def finalizeRoomStates(data) {
     }
   }
   atomicState.remove('thermostat1State')
+}
+
+def recordStartingTemperatures() {
+  if (!atomicState.ventsByRoomId) { return }
+  atomicState.ventsByRoomId.each { roomId, ventIds ->
+    for (ventId in ventIds) {
+      try {
+        def vent = getChildDevice(ventId)
+        if (!vent) { break }
+        BigDecimal currentTemp = getRoomTemp(vent)
+        sendEvent(vent, [name: 'room-starting-temperature-c', value: currentTemp])
+      } catch (err) {
+        log.error(err)
+      }
+    }
+  }
 }
 
 def initializeRoomStates(hvacMode) {
