@@ -379,22 +379,18 @@ class Test extends Specification {
 
     expect:
     def expectedVals = [
-      -1, new Tuple(Level.debug, 'Insuficient number of minutes required to calculate change rate (0 should be greather than 4)'),
+      -1, new Tuple(Level.debug, 'Insuficient number of minutes required to calculate change rate (0 should be greather than 5)'),
       -1, new Tuple(Level.debug, 'Change rate (0.000) is lower than 0.001, therefore it is being excluded'),
-      2,
-      0.002,
-      0.059,
-      0.407,
-      1.000
+      1.000, 0.056, -1.000, 1.429, 1.000
     ]
     def actualVals = [
-      script.calculateRoomChangeRate(0, 0, 0, 4), log.records[0],
-      script.calculateRoomChangeRate(0, 0, 10, 4), log.records[1],
-      script.roundBigDecimal(script.calculateRoomChangeRate(20, 30, 5.0, 100)),
-      script.roundBigDecimal(script.calculateRoomChangeRate(20, 20.1, 60.0, 100)),
-      script.roundBigDecimal(script.calculateRoomChangeRate(20.768, 21, 5, 25)),
-      script.roundBigDecimal(script.calculateRoomChangeRate(19, 21, 5.2, 70)),
-      script.roundBigDecimal(script.calculateRoomChangeRate(19, 29, 10, 100))
+      script.calculateRoomChangeRate(0, 0, 0, 4, 0.03), log.records[0],
+      script.calculateRoomChangeRate(0, 0, 10, 4, 0.03), log.records[1],
+      script.roundBigDecimal(script.calculateRoomChangeRate(20, 30, 5.0, 100, 0.03)),
+      script.roundBigDecimal(script.calculateRoomChangeRate(20, 20.1, 60.0, 100, 0.03)),
+      script.roundBigDecimal(script.calculateRoomChangeRate(20.768, 21, 5, 25, 0.03)),
+      script.roundBigDecimal(script.calculateRoomChangeRate(19, 21, 5.2, 70, 0.03)),
+      script.roundBigDecimal(script.calculateRoomChangeRate(19, 29, 10, 100, 0.03))
     ]
     actualVals == expectedVals
   }

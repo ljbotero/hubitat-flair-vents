@@ -39,9 +39,8 @@ import groovy.transform.Field
 @Field static Integer MAX_NUMBER_OF_STANDARD_VENTS = 15
 @Field static Integer MAX_ITERATIONS = 500
 @Field static Integer HTTP_TIMEOUT_SECS = 5
-@Field static BigDecimal BASE_CONST = 0.0708 //0.0895 //0.0225 //0.00139
-@Field static BigDecimal EXP_CONST = 3.14 //2.44 //3.79 // 6.58
-@Field static String AC_BOOSTER_LINK = 'https://amzn.to/3QwVGbs'
+@Field static BigDecimal BASE_CONST = 0.0991
+@Field static BigDecimal EXP_CONST = 2.3
 
 definition(
     name: 'Flair Vents',
@@ -128,6 +127,7 @@ def mainPage() {
 }
 
 def listDiscoveredDevices() {
+  final String acBoosterLink = 'https://amzn.to/3QwVGbs'
   def children = getChildDevices()
   BigDecimal maxCoolEfficiency = 0
   BigDecimal maxHeatEfficiency = 0
@@ -176,12 +176,12 @@ def listDiscoveredDevices() {
 
       def coolClass = coolEfficiency <= 0 ? '' : coolEfficiency <= 25 ? 'danger-message' : coolEfficiency <= 45 ? 'warning-message' : ''
       def heatClass = heatEfficiency <= 0 ? '' : heatEfficiency <= 25 ? 'danger-message' : heatEfficiency <= 45 ? 'warning-message' : ''      
-      def warnMsg = 'This vent is very inefficient, consider installing an HVAC booster'
+      def warnMsg = 'This vent is very inefficient, consider installing an HVAC booster. Click for a recommendation.'
 
       def coolPopupHtml = coolEfficiency <= 45 ?
-        "<span class='${coolClass}' onclick=\"window.open('${AC_BOOSTER_LINK}');\" title='${warnMsg}'>${coolEfficiency}%</span>" : "${coolEfficiency}%"
+        "<span class='${coolClass}' onclick=\"window.open('${acBoosterLink}');\" title='${warnMsg}'>${coolEfficiency}%</span>" : "${coolEfficiency}%"
       def heatPopupHtml = heatEfficiency <= 45 ?
-        "<span class='${heatClass}' onclick=\"window.open('${AC_BOOSTER_LINK}');\" title='${warnMsg}'>${heatEfficiency}%</span>" : "${heatEfficiency}%"
+        "<span class='${heatClass}' onclick=\"window.open('${acBoosterLink}');\" title='${warnMsg}'>${heatEfficiency}%</span>" : "${heatEfficiency}%"
 
       builder << "<tr><td><a href='/device/edit/${it.getId()}'>${it.getLabel()}</a>" +
         "</td><td>${coolPopupHtml}</td><td>${heatPopupHtml}</td></tr>"
@@ -762,10 +762,10 @@ def finalizeRoomStates(data) {
           def percentOpen = (vent.currentValue('percent-open')).toInteger()
           BigDecimal currentTemp = getRoomTemp(vent)
           BigDecimal lastStartTemp = vent.currentValue('room-starting-temperature-c')
-          def newRate = calculateRoomChangeRate(lastStartTemp, currentTemp, totalMinutes, percentOpen)
-          if (newRate <= 0) { break }
           def ratePropName = data.hvacMode == COOLING ? 'room-cooling-rate' : 'room-heating-rate'
           def currentRate = vent.currentValue(ratePropName)
+          def newRate = calculateRoomChangeRate(lastStartTemp, currentTemp, totalMinutes, percentOpen, currentRate)
+          if (newRate <= 0) { break }
           def rate = rollingAverage(currentRate, newRate, percentOpen / 100, 4)
           sendEvent(vent, [name: ratePropName, value: rate])
         } catch (err) {
@@ -997,7 +997,7 @@ def calculateLongestMinutesToTarget(rateAndTempPerVentId, hvacMode, setpoint, ma
   return longestTimeToGetToTarget
 }
 
-def calculateRoomChangeRate(lastStartTemp, currentTemp, totalMinutes, percentOpen) {
+def calculateRoomChangeRate(lastStartTemp, currentTemp, totalMinutes, percentOpen, currentRate) {
   if (totalMinutes < MIN_MINUTES_TO_SETPOINT) {
     log('Insuficient number of minutes required to calculate change rate ' +
       "(${totalMinutes} should be greather than ${MIN_MINUTES_TO_SETPOINT})", 3)
@@ -1009,12 +1009,8 @@ def calculateRoomChangeRate(lastStartTemp, currentTemp, totalMinutes, percentOpe
   }
   BigDecimal diffTemps = Math.abs(lastStartTemp - currentTemp)
   BigDecimal rate = diffTemps / totalMinutes
-
   BigDecimal pOpen = percentOpen / 100
-
-  BigDecimal equivalentExpRate = (Math.log(pOpen / BASE_CONST)) / EXP_CONST
-  BigDecimal approxMaxRate = (Math.log(1 / BASE_CONST)) / EXP_CONST
-  BigDecimal approxEquivMaxRate = (approxMaxRate * rate) / equivalentExpRate
+  BigDecimal approxEquivMaxRate = (rate / Math.max(rate, currentRate)) / pOpen
 
   if (approxEquivMaxRate > MAX_TEMP_CHANGE_RATE_C) {
     def roundedRate = roundBigDecimal(approxEquivMaxRate)
