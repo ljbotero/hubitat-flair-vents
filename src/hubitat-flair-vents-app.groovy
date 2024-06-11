@@ -294,9 +294,9 @@ def rollingAverage(BigDecimal currentAverage, BigDecimal newNumber, BigDecimal w
   return sum / numEntries
 }
 
-def hasRoomReachedSetpoint(hvacMode, setpoint, currentVentTemp) {
-  (hvacMode == COOLING && currentVentTemp <= setpoint) ||
-  (hvacMode == HEATING && currentVentTemp >= setpoint)
+def hasRoomReachedSetpoint(hvacMode, setpoint, currentVentTemp, offset = 0) {
+  (hvacMode == COOLING && currentVentTemp <= setpoint - offset) ||
+  (hvacMode == HEATING && currentVentTemp >= setpoint + offset)
 }
 
 def calculateHvacMode(temp, coolingSetpoint, heatingSetpoint) {
@@ -719,41 +719,92 @@ def thermostat1ChangeStateHandler(evt) {
         return
       }
       atomicStateUpdate('thermostat1State', 'mode', hvacMode)
-      atomicStateUpdate('thermostat1State', 'startTime', now())
+      atomicStateUpdate('thermostat1State', 'startedRunning', now())
       unschedule(initializeRoomStates)
-      runInMillis(1000, 'initializeRoomStates', [data: hvacMode]) // wait a bit since setpoint is set a few ms later      
+      runInMillis(1000, 'initializeRoomStates', [data: hvacMode]) // wait a bit since setpoint is set a few ms later
       recordStartingTemperatures()
+      runEvery5Minutes('evaluateRebalancingVents')
+      runEvery30Minutes('reBalanceVents')
       break
      default:
       unschedule(initializeRoomStates)
+      unschedule(finalizeRoomStates)
+      unschedule(evaluateRebalancingVents)
+      unschedule(reBalanceVents)
       if (atomicState.thermostat1State)  {
-        unschedule(finalizeRoomStates)
-        atomicStateUpdate('thermostat1State', 'endTime', now())
+        atomicStateUpdate('thermostat1State', 'finishedRunning', now())
         def params = [
             ventIdsByRoomId: atomicState.ventsByRoomId,
-            startTime: atomicState.thermostat1State?.startTime,
-            endTime: atomicState.thermostat1State?.endTime,
+            startedCycle: atomicState.thermostat1State?.startedCycle,
+            startedRunning: atomicState.thermostat1State?.startedRunning,
+            finishedRunning: atomicState.thermostat1State?.finishedRunning,
             hvacMode: atomicState.thermostat1State?.mode
         ]
         // Run a minute after to get more accurate temp readings
         runInMillis(MILLIS_DELAY_TEMP_READINGS, 'finalizeRoomStates', [data: params])
+        atomicState.remove('thermostat1State')
       }
       break
   }
 }
 
 // ### Dynamic Airflow Balancing ###
+def reBalanceVents() {
+  log('Rebalancing Vents!!!', 3)
+  def params = [
+    ventIdsByRoomId: atomicState.ventsByRoomId,
+    startedCycle: atomicState.thermostat1State?.startedCycle,
+    startedRunning: atomicState.thermostat1State?.startedRunning,
+    finishedRunning: now(),
+    hvacMode: atomicState.thermostat1State?.mode
+  ]
+  finalizeRoomStates(params)
+  initializeRoomStates(atomicState.thermostat1State?.mode)
+}
+
+def evaluateRebalancingVents() {
+  if (!atomicState.thermostat1State) { return }
+
+  def ventIdsByRoomId = atomicState.ventsByRoomId
+  String hvacMode = atomicState.thermostat1State?.mode
+  def setPoint = getThermostatSetpoint(hvacMode)
+
+  ventIdsByRoomId.each { roomId, ventIds ->
+    for (ventId in ventIds) {
+      try {
+        def vent = getChildDevice(ventId)
+        if (!vent) { continue }
+        def isRoomActive = vent.currentValue('room-active') == 'true'
+        if (!isRoomActive) { continue }
+        def currPercentOpen = (vent.currentValue('percent-open')).toInteger()
+        if (currPercentOpen < 90) { continue }
+        def roomTemp = getRoomTemp(vent)
+        def roomName = vent.currentValue('room-name')
+        if (!hasRoomReachedSetpoint(hvacMode, setPoint, roomTemp, 0.5)) {
+          log("Rebalancing Vents: Skipped as `${roomName}` hasn't reached setpoint", 3)
+          continue
+        }
+        log("Rebalancing Vents - '${roomName}' is at ${roomTemp} degrees, and has passed the ${setPoint} temp target", 3)
+        reBalanceVents()
+        break
+      } catch (err) {
+        log.error(err)
+      }
+    }
+  }
+}
+
 def finalizeRoomStates(data) {
-  if (!data.ventIdsByRoomId || !data.startTime || !data.endTime || !data.hvacMode) {
+  if (!data.ventIdsByRoomId || !data.startedCycle || !data.startedRunning || !data.finishedRunning || !data.hvacMode) {
     log.warn('Finalizing room states: wrong parameters')
-    atomicState.remove('thermostat1State')
     return
   }
   log('Finalizing room states', 3)
-  def totalMinutes = (data.endTime - data.startTime) / (1000 * 60)
-  log("HVAC ran for ${totalMinutes} minutes", 3)
-  atomicState.maxHvacRunningTime = roundBigDecimal(rollingAverage(atomicState.maxHvacRunningTime, totalMinutes), 6)
-  if (totalMinutes >= ROOM_RATE_CALC_MIN_MINUTES) {
+  def totalRunningMinutes = (data.finishedRunning - data.startedRunning) / (1000 * 60)
+  def totalCycleMinutes = (data.finishedRunning - data.startedCycle) / (1000 * 60)
+  log("HVAC ran for ${totalRunningMinutes} minutes", 3)
+  atomicState.maxHvacRunningTime = roundBigDecimal(rollingAverage(atomicState.maxHvacRunningTime, totalRunningMinutes), 6)
+  if (totalCycleMinutes >= ROOM_RATE_CALC_MIN_MINUTES) {
     data.ventIdsByRoomId.each { roomId, ventIds ->
       for (ventId in ventIds) {
         try {
@@ -764,7 +815,7 @@ def finalizeRoomStates(data) {
           BigDecimal lastStartTemp = vent.currentValue('room-starting-temperature-c')
           def ratePropName = data.hvacMode == COOLING ? 'room-cooling-rate' : 'room-heating-rate'
           def currentRate = vent.currentValue(ratePropName)
-          def newRate = calculateRoomChangeRate(lastStartTemp, currentTemp, totalMinutes, percentOpen, currentRate)
+          def newRate = calculateRoomChangeRate(lastStartTemp, currentTemp, totalCycleMinutes, percentOpen, currentRate)
           if (newRate <= 0) { break }
           def rate = rollingAverage(currentRate, newRate, percentOpen / 100, 4)
           sendEvent(vent, [name: ratePropName, value: rate])
@@ -773,8 +824,7 @@ def finalizeRoomStates(data) {
         }
       }
     }
-  }
-  atomicState.remove('thermostat1State')
+  }  
 }
 
 def recordStartingTemperatures() {
@@ -800,6 +850,7 @@ def initializeRoomStates(hvacMode) {
   // Get the target temperature from the thermostat
   BigDecimal setpoint = getThermostatSetpoint(hvacMode)
   if (!setpoint) { return }
+  atomicStateUpdate('thermostat1State', 'startedCycle', now())
   def rateAndTempPerVentId = getAttribsPerVentId(atomicState.ventsByRoomId, hvacMode)
 
   // Get longest time to reach to target temp
