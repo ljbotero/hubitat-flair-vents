@@ -514,6 +514,7 @@ def processVentTraits(device, details) {
   traitExtract(device, details, 'created-at')
   traitExtract(device, details, 'duct-pressure')
   traitExtract(device, details, 'percent-open', 'percent-open', '%')
+  traitExtract(device, details, 'percent-open', 'level', '%')
   traitExtract(device, details, 'duct-temperature-c')
   traitExtract(device, details, 'motor-run-time')
   traitExtract(device, details, 'system-voltage')
@@ -652,6 +653,7 @@ def patchVent(device, percentOpen) {
 def handleVentPatch(resp, data) {
   if (!isValidResponse(resp) || !data) { return }
   traitExtract(data.device, resp.getJson(), 'percent-open', '%')
+  traitExtract(data.device, resp.getJson(), 'percent-open', 'level', '%')
 }
 
 def patchRoom(device, active) {
