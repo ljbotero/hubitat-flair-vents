@@ -338,11 +338,16 @@ def isValidResponse(resp) {
   if (!resp) {
     log.error('HTTP Null response')
     return false
-   } else if (resp.hasError()) {
-    def respCode = resp?.getStatus() ? resp.getStatus() : ''
-    def respError = resp?.getErrorMessage() ? resp.getErrorMessage() : resp
-    log.error("HTTP response code: ${respCode}, body: ${respError}")
-    return false
+  }
+  try {
+    if (resp.hasError()) {
+      def respCode = resp?.getStatus() ? resp.getStatus() : ''
+      def respError = resp?.getErrorMessage() ? resp.getErrorMessage() : resp
+      log.error("HTTP response code: ${respCode}, body: ${respError}")
+      return false
+    }
+  } catch (err) {
+    log.error(err)
   }
   return true
 }
@@ -442,7 +447,7 @@ private void discover() {
 }
 
 def handleDeviceList(resp, data) {
-  if (!isValidResponse(resp)) { return }
+  if (!isValidResponse(resp) || !data) { return }
   def respJson = resp.getJson()
   respJson.data.each {
     def device = [:]
@@ -479,12 +484,12 @@ def getDeviceData(device) {
  // ### Get device data ###
 
 def handleRoomGet(resp, data) {
-  if (!isValidResponse(resp)) { return }
+  if (!isValidResponse(resp) || !data) { return }
   processRoomTraits(data.device, resp.getJson())
 }
 
 def handleDeviceGet(resp, data) {
-  if (!isValidResponse(resp)) { return }
+  if (!isValidResponse(resp) || !data) { return }
   processVentTraits(data.device, resp.getJson())
 }
 
@@ -566,7 +571,7 @@ def processRoomTraits(device, details) {
 }
 
 def handleRemoteSensorGet(resp, data) {
-  if (!isValidResponse(resp)) { return }
+  if (!isValidResponse(resp) || !data) { return }
   def details = resp?.getJson()
   def propValue = details?.data?.first()?.attributes['occupied']
   //log("handleRemoteSensorGet: ${details}", 1)
@@ -601,7 +606,7 @@ def getStructureData() {
 }
 
 def handleStructureGet(resp, data) {
-  if (!isValidResponse(resp)) { return }
+  if (!isValidResponse(resp) || !data) { return }
   def response = resp.getJson()
   //log("handleStructureGet: ${response}", 1)
   if (!response?.data) {
@@ -645,7 +650,7 @@ def patchVent(device, percentOpen) {
 }
 
 def handleVentPatch(resp, data) {
-  if (!isValidResponse(resp)) { return }
+  if (!isValidResponse(resp) || !data) { return }
   traitExtract(data.device, resp.getJson(), 'percent-open', '%')
 }
 
@@ -670,7 +675,7 @@ def patchRoom(device, active) {
 }
 
 def handleRoomPatch(resp, data) {
-  if (!isValidResponse(resp)) { return }
+  if (!isValidResponse(resp) || !data) { return }
   traitExtract(data.device, resp.getJson(), 'active', 'room-active')
 }
 
