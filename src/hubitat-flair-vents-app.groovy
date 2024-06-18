@@ -494,13 +494,17 @@ def handleDeviceGet(resp, data) {
 }
 
 def traitExtract(device, details, propNameData, propNameDriver = propNameData, unit = null) {
-  def propValue = details.data.attributes[propNameData]
-  if (propValue != null) {
-    if (unit) {
-      sendEvent(device, [name: propNameDriver, value: propValue, unit: unit])
-    } else {
-      sendEvent(device, [name: propNameDriver, value: propValue])
+  try {
+    def propValue = details.data.attributes[propNameData]
+    if (propValue != null) {
+      if (unit) {
+        sendEvent(device, [name: propNameDriver, value: propValue, unit: unit])
+      } else {
+        sendEvent(device, [name: propNameDriver, value: propValue])
+      }
     }
+  } catch (err) {
+    log.warn(err)
   }
 }
 
