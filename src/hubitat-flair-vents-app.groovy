@@ -484,12 +484,12 @@ def getDeviceData(device) {
  // ### Get device data ###
 
 def handleRoomGet(resp, data) {
-  if (!isValidResponse(resp) || !data) { return }
+  if (!isValidResponse(resp) || !data || !data?.device) { return }
   processRoomTraits(data.device, resp.getJson())
 }
 
 def handleDeviceGet(resp, data) {
-  if (!isValidResponse(resp) || !data) { return }
+  if (!isValidResponse(resp) || !data || !data?.device) { return }
   processVentTraits(data.device, resp.getJson())
 }
 
@@ -511,7 +511,7 @@ def traitExtract(device, details, propNameData, propNameDriver = propNameData, u
 def processVentTraits(device, details) {
   logDetails("Processing Vent data for ${device}", details, 1)
 
-  if (!details.data) { return }
+  if (!details || details?.data) { return }
   traitExtract(device, details, 'firmware-version-s')
   traitExtract(device, details, 'rssi')
   traitExtract(device, details, 'connected-gateway-puck-id')
@@ -529,10 +529,10 @@ def processVentTraits(device, details) {
 }
 
 def processRoomTraits(device, details) {
-  logDetails("Processing Room data for ${device}", details, 1)
+  if (!device || !details || !details?.data || !details?.data?.id) { return }
 
-  if (!details?.data) { return }
-  def roomId = details.data.id
+  logDetails("Processing Room data for ${device}", details, 1)
+  def roomId = details?.data?.id
   sendEvent(device, [name: 'room-id', value: roomId])
   traitExtract(device, details, 'name', 'room-name')
   traitExtract(device, details, 'current-temperature-c', 'room-current-temperature-c')
