@@ -447,7 +447,7 @@ private void discover() {
 }
 
 def handleDeviceList(resp, data) {
-  if (!isValidResponse(resp) || !data) { return }
+  if (!isValidResponse(resp)) { return }
   def respJson = resp.getJson()
   respJson.data.each {
     def device = [:]
@@ -611,7 +611,7 @@ def getStructureData() {
 }
 
 def handleStructureGet(resp, data) {
-  if (!isValidResponse(resp) || !data) { return }
+  if (!isValidResponse(resp)) { return }
   def response = resp.getJson()
   //log("handleStructureGet: ${response}", 1)
   if (!response?.data) {
