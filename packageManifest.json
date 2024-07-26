@@ -1,7 +1,7 @@
 {
   "packageName": "Flair Vents",
   "author": "Jaime Botero",
-  "version": "0.11",
+  "version": "0.12",
   "dateReleased": "2024-07-14",
   "minimumHEVersion": "0.0.1",
   "documentationLink": "https://github.com/ljbotero/hubitat-flair-vents/blob/main/README.md",
