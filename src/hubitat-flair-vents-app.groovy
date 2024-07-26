@@ -566,10 +566,13 @@ def processRoomTraits(device, details) {
     def structureId = details.data.relationships.structure.data.id
     sendEvent(device, [name: 'structure-id', value: structureId])
   }
-  def remoteSensor = details?.data?.relationships['remote-sensors']?.data?.first()
-  if (remoteSensor) {
-    uri = BASE_URL + '/api/remote-sensors/' + remoteSensor.id + '/sensor-readings'
-    getDataAsync(uri, handleRemoteSensorGet, [device: device])
+  if (details?.data?.relationships['remote-sensors'] 
+      && details?.data?.relationships['remote-sensors']?.data) {
+      def remoteSensor = details?.data?.relationships['remote-sensors']?.data?.first()
+      if (remoteSensor) {
+        uri = BASE_URL + '/api/remote-sensors/' + remoteSensor.id + '/sensor-readings'
+        getDataAsync(uri, handleRemoteSensorGet, [device: device])
+      }
   }
 
   updateByRoomIdState(details)
@@ -577,10 +580,14 @@ def processRoomTraits(device, details) {
 
 def handleRemoteSensorGet(resp, data) {
   if (!isValidResponse(resp) || !data) { return }
-  def details = resp?.getJson()
-  def propValue = details?.data?.first()?.attributes['occupied']
-  //log("handleRemoteSensorGet: ${details}", 1)
-  sendEvent(data.device, [name: 'room-occupied', value: propValue])
+  try {
+      def details = resp?.getJson()
+      def propValue = details?.data?.first()?.attributes['occupied']
+      //log("handleRemoteSensorGet: ${details}", 1)
+      sendEvent(data.device, [name: 'room-occupied', value: propValue])
+  } (err) {
+    log.error(err)
+  }
 }
 
 def updateByRoomIdState(details) {
