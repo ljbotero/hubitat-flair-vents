@@ -580,7 +580,9 @@ def processRoomTraits(device, details) {
 def handleRemoteSensorGet(resp, data) {
     if (!isValidResponse(resp) || !data) { return }
     def details = resp?.getJson()
-    def propValue = details?.data?.first()?.attributes['occupied']
+    if (!details?.data) { return }
+    if (!details?.data?.first()) { return }
+    def propValue = details?.data?.first()?.attributes['occupied']    
     //log("handleRemoteSensorGet: ${details}", 1)
     sendEvent(data.device, [name: 'room-occupied', value: propValue])
 }
