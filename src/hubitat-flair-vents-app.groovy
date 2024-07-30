@@ -637,12 +637,14 @@ def patchVent(device, percentOpen) {
     pOpen = 0
     log.warn('Trying to set vent open percentage to inavlid value')
   }
-  def currPercentOpen = (device.currentValue('percent-open')).toInteger()
-  if (percentOpen == currPercentOpen) {
-    log("Keeping percent open for ${device} unchanged to ${percentOpen}%", 3)
-    return
+  if (device?.currentValue('percent-open')) {
+      def currPercentOpen = (device?.currentValue('percent-open')).toInteger()
+      if (percentOpen == currPercentOpen) {
+        log("Keeping percent open for ${device} unchanged to ${percentOpen}%", 3)
+        return
+      }
+      log("Setting percent open for ${device} from ${currPercentOpen} to ${percentOpen}%", 3)
   }
-  log("Setting percent open for ${device} from ${currPercentOpen} to ${percentOpen}%", 3)
 
   def deviceId = device.getDeviceNetworkId()
   def uri = BASE_URL + '/api/vents/' + deviceId
