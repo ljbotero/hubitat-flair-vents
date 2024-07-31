@@ -27,10 +27,9 @@ import groovy.transform.Field
 @Field static Integer MILLIS_DELAY_TEMP_READINGS = 1000 * 30
 @Field static BigDecimal MIN_PERCENTAGE_OPEN = 0.0
 @Field static BigDecimal VENT_PRE_ADJUSTMENT_THRESHOLD_C = 0.2
-@Field static BigDecimal ROOM_RATE_CALC_MIN_MINUTES = 2.5
 @Field static BigDecimal MAX_PERCENTAGE_OPEN = 100.0
 @Field static BigDecimal MAX_MINUTES_TO_SETPOINT = 60
-@Field static BigDecimal MIN_MINUTES_TO_SETPOINT = 5
+@Field static BigDecimal MIN_MINUTES_TO_SETPOINT = 1  //5
 @Field static BigDecimal SETPOINT_OFFSET_C = 0.7
 @Field static BigDecimal MAX_TEMP_CHANGE_RATE_C = 1.5
 @Field static BigDecimal MIN_TEMP_CHANGE_RATE_C = 0.001
@@ -82,6 +81,8 @@ def mainPage() {
         input 'discoverDevices', 'button', title: 'Discover', submitOnChange: true
       }
       listDiscoveredDevices()
+      
+
 
       section('<h2>Dynamic Airflow Balancing</h2>') {
         input 'dabEnabled', title: 'Use Dynamic Airflow Balancing', submitOnChange: true, defaultValue: false, 'bool'
@@ -132,8 +133,8 @@ def listDiscoveredDevices() {
   BigDecimal maxCoolEfficiency = 0
   BigDecimal maxHeatEfficiency = 0
   for (vent in children) {
-    def coolingRate = vent.currentValue('room-cooling-rate')
-    def heatingRate = vent.currentValue('room-heating-rate')
+    def coolingRate = vent.currentValue('room-cooling-rate') ?: 0
+    def heatingRate = vent.currentValue('room-heating-rate') ?: 0
     if (maxCoolEfficiency < coolingRate) {
       maxCoolEfficiency = coolingRate
     }
@@ -169,8 +170,8 @@ def listDiscoveredDevices() {
       '<tbody>'
   children.each {
     if (it != null) {
-      def coolingRate = it.currentValue('room-cooling-rate')
-      def heatingRate = it.currentValue('room-heating-rate')
+      def coolingRate = it.currentValue('room-cooling-rate') ?: 0
+      def heatingRate = it.currentValue('room-heating-rate') ?: 0
       def coolEfficiency = maxCoolEfficiency > 0 ? roundBigDecimal((coolingRate / maxCoolEfficiency) * 100, 0) : 0
       def heatEfficiency = maxHeatEfficiency > 0 ? roundBigDecimal((heatingRate / maxHeatEfficiency) * 100, 0) : 0
 
@@ -218,9 +219,9 @@ def initialize() {
     subscribe(settings.thermostat1, 'thermostatOperatingState', thermostat1ChangeStateHandler)
     subscribe(settings.thermostat1, 'temperature', thermostat1ChangeTemp)
 
-    def temp = thermostat1.currentValue('temperature')
-    def coolingSetpoint = thermostat1.currentValue('coolingSetpoint')
-    def heatingSetpoint = thermostat1.currentValue('heatingSetpoint')
+    def temp = thermostat1.currentValue('temperature') ?: 0
+    def coolingSetpoint = thermostat1.currentValue('coolingSetpoint') ?: 0
+    def heatingSetpoint = thermostat1.currentValue('heatingSetpoint') ?: 0
     String hvacMode = calculateHvacMode(temp, coolingSetpoint, heatingSetpoint)
     runInMillis(3000, 'initializeRoomStates', [data: hvacMode])
   }
@@ -242,14 +243,14 @@ private openAllVents(ventIdsByRoomId, percentOpen) {
 private getRoomTemp(vent) {
   def tempDevice = settings."thermostat${vent.getId()}"
   if (tempDevice) {
-    def temp = tempDevice.currentValue('temperature')
+    def temp = tempDevice.currentValue('temperature') ?: 0
     if (settings.thermostat1TempUnit == '2') {
       temp =  convertFahrenheitToCentigrades(temp)
     }
     log("Got temp from ${tempDevice.getLabel()} of ${temp}", 2)
     return temp
   }
-  return vent.currentValue('room-current-temperature-c')
+  return vent.currentValue('room-current-temperature-c') ?: 0
 }
 
 private atomicStateUpdate(stateKey, key, value) {
@@ -259,8 +260,8 @@ private atomicStateUpdate(stateKey, key, value) {
 
 def getThermostatSetpoint(hvacMode) {
   BigDecimal setpoint = hvacMode == COOLING ?
-     thermostat1.currentValue('coolingSetpoint') - SETPOINT_OFFSET_C :
-     thermostat1.currentValue('heatingSetpoint') + SETPOINT_OFFSET_C
+     (thermostat1.currentValue('coolingSetpoint') ?: 0) - SETPOINT_OFFSET_C :
+     (thermostat1.currentValue('heatingSetpoint') ?: 0) + SETPOINT_OFFSET_C
   setpoint = setpoint ?: thermostat1.currentValue('thermostatSetpoint')
   if (!setpoint) {
     log.error('Thermostat has no setpoint property, please choose a vaid thermostat')
@@ -637,14 +638,12 @@ def patchVent(device, percentOpen) {
     pOpen = 0
     log.warn('Trying to set vent open percentage to inavlid value')
   }
-  if (device?.currentValue('percent-open')) {
-      def currPercentOpen = (device?.currentValue('percent-open')).toInteger()
-      if (percentOpen == currPercentOpen) {
-        log("Keeping percent open for ${device} unchanged to ${percentOpen}%", 3)
-        return
-      }
-      log("Setting percent open for ${device} from ${currPercentOpen} to ${percentOpen}%", 3)
+  def currPercentOpen = (device?.currentValue('percent-open') ?: 0).toInteger()
+  if (percentOpen == currPercentOpen) {
+    log("Keeping percent open for ${device} unchanged to ${percentOpen}%", 3)
+    return
   }
+  log("Setting percent open for ${device} from ${currPercentOpen} to ${percentOpen}%", 3)
 
   def deviceId = device.getDeviceNetworkId()
   def uri = BASE_URL + '/api/vents/' + deviceId
@@ -694,8 +693,8 @@ def handleRoomPatch(resp, data) {
 def thermostat1ChangeTemp(evt) {
   log("thermostat changed temp to:${evt.value}", 2)
   def temp = thermostat1.currentValue('temperature')
-  def coolingSetpoint = thermostat1.currentValue('coolingSetpoint')
-  def heatingSetpoint = thermostat1.currentValue('heatingSetpoint')
+  def coolingSetpoint = thermostat1.currentValue('coolingSetpoint') ?: 0
+  def heatingSetpoint = thermostat1.currentValue('heatingSetpoint') ?: 0
   String hvacMode = calculateHvacMode(temp, coolingSetpoint, heatingSetpoint)
   def thermostatSetpoint = getThermostatSetpoint(hvacMode)
   if (isThermostatAboutToChangeState(hvacMode, thermostatSetpoint, temp)) {
@@ -741,13 +740,11 @@ def thermostat1ChangeStateHandler(evt) {
       runInMillis(1000, 'initializeRoomStates', [data: hvacMode]) // wait a bit since setpoint is set a few ms later
       recordStartingTemperatures()
       runEvery5Minutes('evaluateRebalancingVents')
-      runEvery30Minutes('reBalanceVents')
       break
      default:
       unschedule(initializeRoomStates)
       unschedule(finalizeRoomStates)
       unschedule(evaluateRebalancingVents)
-      unschedule(reBalanceVents)
       if (atomicState.thermostat1State)  {
         atomicStateUpdate('thermostat1State', 'finishedRunning', now())
         def params = [
@@ -759,6 +756,7 @@ def thermostat1ChangeStateHandler(evt) {
         ]
         // Run a minute after to get more accurate temp readings
         runInMillis(MILLIS_DELAY_TEMP_READINGS, 'finalizeRoomStates', [data: params])
+        //finalizeRoomStates(params)
         atomicState.remove('thermostat1State')
       }
       break
@@ -788,60 +786,65 @@ def evaluateRebalancingVents() {
 
   ventIdsByRoomId.each { roomId, ventIds ->
     for (ventId in ventIds) {
-      try {
-        def vent = getChildDevice(ventId)
-        if (!vent) { continue }
-        def isRoomActive = vent.currentValue('room-active') == 'true'
-        if (!isRoomActive) { continue }
-        def currPercentOpen = (vent.currentValue('percent-open')).toInteger()
-        if (currPercentOpen < 90) { continue }
-        def roomTemp = getRoomTemp(vent)
-        def roomName = vent.currentValue('room-name')
-        if (!hasRoomReachedSetpoint(hvacMode, setPoint, roomTemp, 0.5)) {
-          log("Rebalancing Vents: Skipped as `${roomName}` hasn't reached setpoint", 3)
-          continue
-        }
-        log("Rebalancing Vents - '${roomName}' is at ${roomTemp} degrees, and has passed the ${setPoint} temp target", 3)
-        reBalanceVents()
-        break
-      } catch (err) {
-        log.error(err)
+      def vent = getChildDevice(ventId)
+      if (!vent) { continue }
+      def isRoomActive = vent.currentValue('room-active') == 'true'
+      if (!isRoomActive) { continue }
+      def currPercentOpen = (vent.currentValue('percent-open') ?: 0).toInteger()
+      if (currPercentOpen < 90) { continue }
+      def roomTemp = getRoomTemp(vent)
+      def roomName = vent.currentValue('room-name') ?: ''
+      if (!hasRoomReachedSetpoint(hvacMode, setPoint, roomTemp, 0.5)) {
+        //log("Rebalancing Vents: Skipped as `${roomName}` hasn't reached setpoint", 3)
+        continue
       }
+      log("Rebalancing Vents - '${roomName}' is at ${roomTemp} degrees, and has passed the ${setPoint} temp target", 3)
+      reBalanceVents()
+      break
     }
   }
 }
 
 def finalizeRoomStates(data) {
   if (!data.ventIdsByRoomId || !data.startedCycle || !data.startedRunning || !data.finishedRunning || !data.hvacMode) {
-    log.warn('Finalizing room states: wrong parameters')
+      log.warn("Finalizing room states: wrong parameters (${data.ventIdsByRoomId}, ${data.startedCycle}, ${data.startedRunning}, ${data.finishedRunning}, ${data.hvacMode})")
     return
   }
-  log('Finalizing room states', 3)
+  log('Start - Finalizing room states', 3)
   def totalRunningMinutes = (data.finishedRunning - data.startedRunning) / (1000 * 60)
   def totalCycleMinutes = (data.finishedRunning - data.startedCycle) / (1000 * 60)
   log("HVAC ran for ${totalRunningMinutes} minutes", 3)
   atomicState.maxHvacRunningTime = roundBigDecimal(rollingAverage(atomicState.maxHvacRunningTime, totalRunningMinutes), 6)
-  if (totalCycleMinutes >= ROOM_RATE_CALC_MIN_MINUTES) {
+  if (totalCycleMinutes >= MIN_MINUTES_TO_SETPOINT) {
     data.ventIdsByRoomId.each { roomId, ventIds ->
       for (ventId in ventIds) {
-        try {
           def vent = getChildDevice(ventId)
-          if (!vent) { break }
-          def percentOpen = (vent.currentValue('percent-open')).toInteger()
+          if (!vent) { 
+              log("Failed getting vent Id ${ventId}", 3)
+              break 
+          }
+          def percentOpen = (vent.currentValue('percent-open') ?: 0).toInteger()
           BigDecimal currentTemp = getRoomTemp(vent)
-          BigDecimal lastStartTemp = vent.currentValue('room-starting-temperature-c')
+          BigDecimal lastStartTemp = vent.currentValue('room-starting-temperature-c') ?: 0
           def ratePropName = data.hvacMode == COOLING ? 'room-cooling-rate' : 'room-heating-rate'
-          def currentRate = vent.currentValue(ratePropName)
+          BigDecimal currentRate = vent.currentValue(ratePropName) ?: 0
           def newRate = calculateRoomChangeRate(lastStartTemp, currentTemp, totalCycleMinutes, percentOpen, currentRate)
-          if (newRate <= 0) { break }
+          def roomName = vent.currentValue('room-name') ?: ''
+          if (newRate <= 0) { 
+              log("New rate for ${roomName}'s is ${newRate}", 3)
+              break 
+          }
           def rate = rollingAverage(currentRate, newRate, percentOpen / 100, 4)
           sendEvent(vent, [name: ratePropName, value: rate])
-        } catch (err) {
-          log.error(err)
-        }
+
+          log("Updating ${roomName}'s ${ratePropName} to ${roundBigDecimal(rate)}", 3)
       }
     }
-  }  
+  } else {
+        log("Could not calculate room states as it ran for ${totalCycleMinutes} minutes and it needs to run for a minmum of ${MIN_MINUTES_TO_SETPOINT}", 3)
+  }
+
+  log('End - Finalizing room states', 3)
 }
 
 def recordStartingTemperatures() {
@@ -944,7 +947,7 @@ def adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId, hvacMod
     for (item in rateAndTempPerVentId) {
       def ventId = item.key
       def stateVal = item.value
-      def percentOpenVal = calculatedPercentOpenPerVentId?."${ventId}" ?: 0
+      BigDecimal percentOpenVal = calculatedPercentOpenPerVentId?."${ventId}" ?: 0
       if (percentOpenVal >= MAX_PERCENTAGE_OPEN) {
         percentOpenVal = MAX_PERCENTAGE_OPEN
       } else {
@@ -971,15 +974,15 @@ def getAttribsPerVentId(ventIdsByRoomId, hvacMode) {
         def vent = getChildDevice(ventId)
         if (!vent) { break }
         def rate = hvacMode == COOLING ?
-          vent.currentValue('room-cooling-rate') :
-          vent.currentValue('room-heating-rate')
+          (vent.currentValue('room-cooling-rate') ?: 0) :
+          (vent.currentValue('room-heating-rate') ?: 0)
         rate = rate ?: 0
         def isRoomActive = vent.currentValue('room-active') == 'true'
         rateAndTempPerVentId."${ventId}" = [
           'rate':  rate,
           'temp': getRoomTemp(vent),
           'active': isRoomActive,
-          'name': vent.currentValue('room-name')
+          'name': vent.currentValue('room-name') ?: ''
         ]
       } catch (err) {
         log.error(err)
@@ -1018,7 +1021,7 @@ def calculateVentOpenPercentange(room, startTemp, setpoint, hvacMode, maxRate, l
     log("'${room}' is already ${msgTemp} (${startTemp}) than setpoint (${setpoint})", 3)
     return MIN_PERCENTAGE_OPEN
   }
-  def percentageOpen = MAX_PERCENTAGE_OPEN
+  BigDecimal percentageOpen = MAX_PERCENTAGE_OPEN
   if (maxRate > 0 && longestTimeToGetToTarget > 0) {
     def targetRate = Math.abs(setpoint - startTemp) / longestTimeToGetToTarget
     percentageOpen = BASE_CONST * Math.exp((targetRate / maxRate) * EXP_CONST)
@@ -1078,7 +1081,11 @@ def calculateRoomChangeRate(lastStartTemp, currentTemp, totalMinutes, percentOpe
   BigDecimal diffTemps = Math.abs(lastStartTemp - currentTemp)
   BigDecimal rate = diffTemps / totalMinutes
   BigDecimal pOpen = percentOpen / 100
-  BigDecimal approxEquivMaxRate = (rate / Math.max(rate, currentRate)) / pOpen
+  BigDecimal maxRate = Math.max(rate, currentRate)
+  BigDecimal approxEquivMaxRate = 0
+  if (maxRate != 0) {
+    approxEquivMaxRate = (rate / maxRate) / pOpen
+  }
 
   if (approxEquivMaxRate > MAX_TEMP_CHANGE_RATE_C) {
     def roundedRate = roundBigDecimal(approxEquivMaxRate)
@@ -1091,3 +1098,4 @@ def calculateRoomChangeRate(lastStartTemp, currentTemp, totalMinutes, percentOpe
   }
   return approxEquivMaxRate
 }
+
