@@ -81,8 +81,6 @@ def mainPage() {
         input 'discoverDevices', 'button', title: 'Discover', submitOnChange: true
       }
       listDiscoveredDevices()
-      
-
 
       section('<h2>Dynamic Airflow Balancing</h2>') {
         input 'dabEnabled', title: 'Use Dynamic Airflow Balancing', submitOnChange: true, defaultValue: false, 'bool'
@@ -342,9 +340,8 @@ def isValidResponse(resp) {
   }
   try {
     if (resp.hasError()) {
-      def respCode = resp?.getStatus() ? resp.getStatus() : ''
-      def respError = resp?.getErrorMessage() ? resp.getErrorMessage() : resp
-      log.error("HTTP response code: ${respCode}, body: ${respError}")
+      def respJson = groovy.json.JsonOutput.toJson(resp)
+      log.error("HTTP response: ${respJson}")
       return false
     }
   } catch (err) {
@@ -504,6 +501,7 @@ def traitExtract(device, details, propNameData, propNameDriver = propNameData, u
         sendEvent(device, [name: propNameDriver, value: propValue])
       }
     }
+    logDetails("Estracted: ${propNameData} = ${propValue}", 1)
   } catch (err) {
     log.warn(err)
   }
@@ -512,10 +510,13 @@ def traitExtract(device, details, propNameData, propNameDriver = propNameData, u
 def processVentTraits(device, details) {
   logDetails("Processing Vent data for ${device}", details, 1)
 
-  if (!details || details?.data) { return }
+  if (!details || !details?.data) { 
+    log.warn("Failed extracting data for ${device}")
+    return 
+  }
   traitExtract(device, details, 'firmware-version-s')
   traitExtract(device, details, 'rssi')
-  traitExtract(device, details, 'connected-gateway-puck-id')
+  traitExtract(device, details, 'connected-gateway-name')
   traitExtract(device, details, 'created-at')
   traitExtract(device, details, 'duct-pressure')
   traitExtract(device, details, 'percent-open', 'percent-open', '%')
@@ -740,11 +741,13 @@ def thermostat1ChangeStateHandler(evt) {
       runInMillis(1000, 'initializeRoomStates', [data: hvacMode]) // wait a bit since setpoint is set a few ms later
       recordStartingTemperatures()
       runEvery5Minutes('evaluateRebalancingVents')
+      runEvery30Minutes('reBalanceVents')
       break
      default:
       unschedule(initializeRoomStates)
       unschedule(finalizeRoomStates)
       unschedule(evaluateRebalancingVents)
+      unschedule(reBalanceVents)
       if (atomicState.thermostat1State)  {
         atomicStateUpdate('thermostat1State', 'finishedRunning', now())
         def params = [
@@ -786,28 +789,33 @@ def evaluateRebalancingVents() {
 
   ventIdsByRoomId.each { roomId, ventIds ->
     for (ventId in ventIds) {
-      def vent = getChildDevice(ventId)
-      if (!vent) { continue }
-      def isRoomActive = vent.currentValue('room-active') == 'true'
-      if (!isRoomActive) { continue }
-      def currPercentOpen = (vent.currentValue('percent-open') ?: 0).toInteger()
-      if (currPercentOpen < 90) { continue }
-      def roomTemp = getRoomTemp(vent)
-      def roomName = vent.currentValue('room-name') ?: ''
-      if (!hasRoomReachedSetpoint(hvacMode, setPoint, roomTemp, 0.5)) {
-        //log("Rebalancing Vents: Skipped as `${roomName}` hasn't reached setpoint", 3)
-        continue
+      try {
+        def vent = getChildDevice(ventId)
+        if (!vent) {
+          continue }
+        def isRoomActive = vent.currentValue('room-active') == 'true'
+        if (!isRoomActive) { continue }
+        def currPercentOpen = (vent.currentValue('percent-open') ?: 0).toInteger()
+        if (currPercentOpen < 50) { continue }
+        def roomTemp = getRoomTemp(vent)
+        def roomName = vent.currentValue('room-name') ?: ''
+        if (!hasRoomReachedSetpoint(hvacMode, setPoint, roomTemp, 0.5)) {
+          //log("Rebalancing Vents: Skipped as `${roomName}` hasn't reached setpoint", 3)
+          continue
+        }
+        log("Rebalancing Vents - '${roomName}' is at ${roomTemp} degrees, and has passed the ${setPoint} temp target", 3)
+        reBalanceVents()
+        break
+      } catch (err) {
+        log.error(err)
       }
-      log("Rebalancing Vents - '${roomName}' is at ${roomTemp} degrees, and has passed the ${setPoint} temp target", 3)
-      reBalanceVents()
-      break
     }
   }
 }
 
 def finalizeRoomStates(data) {
   if (!data.ventIdsByRoomId || !data.startedCycle || !data.startedRunning || !data.finishedRunning || !data.hvacMode) {
-      log.warn("Finalizing room states: wrong parameters (${data.ventIdsByRoomId}, ${data.startedCycle}, ${data.startedRunning}, ${data.finishedRunning}, ${data.hvacMode})")
+    log.warn("Finalizing room states: wrong parameters (${data.ventIdsByRoomId}, ${data.startedCycle}, ${data.startedRunning}, ${data.finishedRunning}, ${data.hvacMode})")
     return
   }
   log('Start - Finalizing room states', 3)
@@ -818,30 +826,30 @@ def finalizeRoomStates(data) {
   if (totalCycleMinutes >= MIN_MINUTES_TO_SETPOINT) {
     data.ventIdsByRoomId.each { roomId, ventIds ->
       for (ventId in ventIds) {
-          def vent = getChildDevice(ventId)
-          if (!vent) { 
-              log("Failed getting vent Id ${ventId}", 3)
-              break 
-          }
-          def percentOpen = (vent.currentValue('percent-open') ?: 0).toInteger()
-          BigDecimal currentTemp = getRoomTemp(vent)
-          BigDecimal lastStartTemp = vent.currentValue('room-starting-temperature-c') ?: 0
-          def ratePropName = data.hvacMode == COOLING ? 'room-cooling-rate' : 'room-heating-rate'
-          BigDecimal currentRate = vent.currentValue(ratePropName) ?: 0
-          def newRate = calculateRoomChangeRate(lastStartTemp, currentTemp, totalCycleMinutes, percentOpen, currentRate)
-          def roomName = vent.currentValue('room-name') ?: ''
-          if (newRate <= 0) { 
-              log("New rate for ${roomName}'s is ${newRate}", 3)
-              break 
-          }
-          def rate = rollingAverage(currentRate, newRate, percentOpen / 100, 4)
-          sendEvent(vent, [name: ratePropName, value: rate])
+        def vent = getChildDevice(ventId)
+        if (!vent) { 
+          log("Failed getting vent Id ${ventId}", 3)
+          break 
+        }
+        def percentOpen = (vent.currentValue('percent-open') ?: 0).toInteger()
+        BigDecimal currentTemp = getRoomTemp(vent)
+        BigDecimal lastStartTemp = vent.currentValue('room-starting-temperature-c') ?: 0
+        def ratePropName = data.hvacMode == COOLING ? 'room-cooling-rate' : 'room-heating-rate'
+        BigDecimal currentRate = vent.currentValue(ratePropName) ?: 0
+        def newRate = calculateRoomChangeRate(lastStartTemp, currentTemp, totalCycleMinutes, percentOpen, currentRate)
+        def roomName = vent.currentValue('room-name') ?: ''
+        if (newRate <= 0) { 
+          log("New rate for ${roomName}'s is ${newRate}", 3)
+          break 
+        }
+        def rate = rollingAverage(currentRate, newRate, percentOpen / 100, 4)
+        sendEvent(vent, [name: ratePropName, value: rate])
 
-          log("Updating ${roomName}'s ${ratePropName} to ${roundBigDecimal(rate)}", 3)
+        log("Updating ${roomName}'s ${ratePropName} to ${roundBigDecimal(rate)}", 3)
       }
     }
   } else {
-        log("Could not calculate room states as it ran for ${totalCycleMinutes} minutes and it needs to run for a minmum of ${MIN_MINUTES_TO_SETPOINT}", 3)
+    log("Could not calculate room states as it ran for ${totalCycleMinutes} minutes and it needs to run for a minmum of ${MIN_MINUTES_TO_SETPOINT}", 3)
   }
 
   log('End - Finalizing room states', 3)
@@ -1026,12 +1034,12 @@ def calculateVentOpenPercentange(room, startTemp, setpoint, hvacMode, maxRate, l
     def targetRate = Math.abs(setpoint - startTemp) / longestTimeToGetToTarget
     percentageOpen = BASE_CONST * Math.exp((targetRate / maxRate) * EXP_CONST)
     percentageOpen = roundBigDecimal(percentageOpen * 100)
-    log("changing percentage open for ${room} to ${percentageOpen}% (maxRate=${roundBigDecimal(maxRate)})", 3)
     if (percentageOpen < MIN_PERCENTAGE_OPEN) {
       percentageOpen = MIN_PERCENTAGE_OPEN
     } else if (percentageOpen > MAX_PERCENTAGE_OPEN) {
       percentageOpen = MAX_PERCENTAGE_OPEN
     }
+    log("changing percentage open for ${room} to ${percentageOpen}% (maxRate=${roundBigDecimal(maxRate)})", 3)
   }
   return percentageOpen
 }

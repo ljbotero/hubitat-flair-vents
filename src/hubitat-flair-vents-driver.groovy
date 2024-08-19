@@ -24,13 +24,13 @@ metadata {
 
         attribute 'rssi', 'number'
         //attribute "percent-open-reason", "string"
-        attribute 'connected-gateway-puck-id', 'string'
+        attribute 'connected-gateway-name', 'string'
         attribute 'has-buzzed', 'enum', ['true', 'false']
         attribute 'updated-at', 'string'
         attribute 'inactive', 'enum', ['true', 'false']
         attribute 'created-at', 'string'
         attribute 'percent-open', 'number'
-        attribute 'voltage', 'number'
+        attribute 'system-voltage', 'number'
         attribute 'setup-lightstrip', 'number'
         attribute 'motor-overdrive-ms', 'number'
         attribute 'duct-temperature-c', 'number'
