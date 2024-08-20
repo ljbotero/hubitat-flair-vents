@@ -523,7 +523,7 @@ def processVentTraits(device, details) {
   traitExtract(device, details, 'percent-open', 'level', '%')
   traitExtract(device, details, 'duct-temperature-c')
   traitExtract(device, details, 'motor-run-time')
-  traitExtract(device, details, 'system-voltage')
+  traitExtract(device, details, 'system-voltage', 'voltage')
   traitExtract(device, details, 'motor-current')
   traitExtract(device, details, 'has-buzzed')
   traitExtract(device, details, 'updated-at')
@@ -1106,4 +1106,3 @@ def calculateRoomChangeRate(lastStartTemp, currentTemp, totalMinutes, percentOpe
   }
   return approxEquivMaxRate
 }
-

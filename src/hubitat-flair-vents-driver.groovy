@@ -21,6 +21,7 @@ metadata {
     definition(name: 'Flair vents', namespace: 'bot.flair', author:  'Jaime Botero') {
         capability 'Refresh'
         capability 'SwitchLevel'
+        capability 'VoltageMeasurement'
 
         attribute 'rssi', 'number'
         //attribute "percent-open-reason", "string"
@@ -30,7 +31,6 @@ metadata {
         attribute 'inactive', 'enum', ['true', 'false']
         attribute 'created-at', 'string'
         attribute 'percent-open', 'number'
-        attribute 'system-voltage', 'number'
         attribute 'setup-lightstrip', 'number'
         attribute 'motor-overdrive-ms', 'number'
         attribute 'duct-temperature-c', 'number'
