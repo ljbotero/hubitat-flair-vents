@@ -63,7 +63,7 @@ def mainPage() {
     section {
       input 'clientId', 'text', title: 'Client Id (OAuth 2.0)', required: true, submitOnChange: true
       input 'clientSecret', 'text', title: 'Client Secret OAuth 2.0', required: true, submitOnChange: true
-      paragraph '<b><small>Obtain your client Id and secret from ' +
+      paragraph '<small><b>Obtain your client Id and secret from ' +
         "<a href='https://forms.gle/VohiQjWNv9CAP2ASA' target='_blank'>here<a/></b></small>"
       if (settings?.clientId != null && settings?.clientSecret != null ) {
         input 'authenticate', 'button', title: 'Authenticate', submitOnChange: true
@@ -79,6 +79,7 @@ def mainPage() {
     if (state.flairAccessToken != null) {
       section {
         input 'discoverDevices', 'button', title: 'Discover', submitOnChange: true
+        input 'structureId', 'text', title: 'Home Id (SID)', required: false, submitOnChange: true
       }
       listDiscoveredDevices()
 
@@ -192,6 +193,13 @@ def listDiscoveredDevices() {
     paragraph 'Discovered devices:'
     paragraph links
   }
+}
+
+def getStructureId() {
+  if (!settings?.structureId) {
+    getStructureData()
+  }
+  return settings?.structureId
 }
 
 def updated() {
@@ -350,25 +358,6 @@ def isValidResponse(resp) {
   return true
 }
 
-def getData(uri, handler, data = null) {
-  def headers = [ Authorization: 'Bearer ' + state.flairAccessToken ]
-  def contentType = CONTENT_TYPE
-  def httpParams = [
-    uri: uri, headers: headers, contentType: contentType,
-    timeout: HTTP_TIMEOUT_SECS,
-    query: data
-  ]
-  try {
-    httpGet(httpParams) { resp ->
-      if (resp.success) {
-        handler(resp, resp.data)
-      }
-    }
-  } catch (e) {
-    log.warn "httpGet call failed: ${e.message}"
-  }
-}
-
 def getDataAsync(uri, handler, data = null) {
   def headers = [ Authorization: 'Bearer ' + state.flairAccessToken ]
   def contentType = CONTENT_TYPE
@@ -440,13 +429,15 @@ def appButtonHandler(btn) {
 private void discover() {
   log('Discovery started', 3)
   atomicState.remove('ventsByRoomId')
-  def uri = BASE_URL + '/api/vents'
+  def structureId = getStructureId()
+  def uri = "${BASE_URL}/api/structures/${structureId}/vents"
   getDataAsync(uri, handleDeviceList)
 }
 
 def handleDeviceList(resp, data) {
   if (!isValidResponse(resp)) { return }
   def respJson = resp.getJson()
+  // logDetails('Discovery Data', respJson, 1)
   respJson.data.each {
     def device = [:]
     device.id = it.id
@@ -454,7 +445,7 @@ def handleDeviceList(resp, data) {
     device.label = it.attributes.name
     def dev = makeRealDevice(device)
     if (dev != null) {
-      processVentTraits(dev, it)
+      processVentTraits(dev, [data: it])
     }
   }
 }
@@ -512,7 +503,7 @@ def processVentTraits(device, details) {
 
   if (!details || !details?.data) { 
     log.warn("Failed extracting data for ${device}")
-    return 
+    return
   }
   traitExtract(device, details, 'firmware-version-s')
   traitExtract(device, details, 'rssi')
@@ -605,29 +596,34 @@ def updateByRoomIdState(details) {
  // ### Operations ###
 
 def patchStructureData(attributes) {
-  if (!state.structureId) { return }
   def body = [data: [type: 'structures', attributes: attributes]]
-  def uri = BASE_URL + "/api/structures/${state.structureId}"
+  def uri = BASE_URL + "/api/structures/${getStructureId()}"
   patchDataAsync(uri, null, body)
 }
 
 def getStructureData() {
+  log('getStructureData', 1)
   def uri = BASE_URL + '/api/structures'
-  getDataAsync(uri, handleStructureGet)
-}
-
-def handleStructureGet(resp, data) {
-  if (!isValidResponse(resp)) { return }
-  def response = resp.getJson()
-  //log("handleStructureGet: ${response}", 1)
-  if (!response?.data) {
-    return
+  def headers = [ Authorization: 'Bearer ' + state.flairAccessToken ]
+  def contentType = CONTENT_TYPE
+  def httpParams = [ uri: uri, headers: headers, contentType: contentType, timeout: HTTP_TIMEOUT_SECS ]
+  httpGet(httpParams) { resp ->
+    if (!resp.success) {
+      return
+    }
+    def response = resp.getData()
+    if (!response) {
+      error('getStructureData: no data')
+      return
+    }
+    logDetails('response: ', response)
+    def myStruct = response.data.first()
+    if (!myStruct?.attributes) {
+      error('getStructureData: no structure data')
+      return
+    }
+    app.updateSetting("structureId", myStruct.id)
   }
-  def myStruct = resp.getJson().data.first()
-  if (!myStruct?.attributes) {
-    return
-  }
-  state.structureId = myStruct.id
 }
 
 def patchVent(device, percentOpen) {
