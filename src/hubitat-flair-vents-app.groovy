@@ -193,8 +193,8 @@ def listDiscoveredDevices() {
   children.each { vent ->
     def coolRate = vent.currentValue('room-cooling-rate') ?: 0
     def heatRate = vent.currentValue('room-heating-rate') ?: 0
-    maxCoolEfficiency = Math.max(maxCoolEfficiency, coolRate)
-    maxHeatEfficiency = Math.max(maxHeatEfficiency, heatRate)
+    maxCoolEfficiency = maxCoolEfficiency.max(coolRate)
+    maxHeatEfficiency = maxHeatEfficiency.max(heatRate)
   }
 
   def builder = new StringBuilder()
