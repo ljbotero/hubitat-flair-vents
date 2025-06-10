@@ -100,13 +100,21 @@ def mainPage() {
           } else if (settings.thermostat1AdditionalStandardVents > MAX_NUMBER_OF_STANDARD_VENTS) {
             app.updateSetting('thermostat1AdditionalStandardVents', MAX_NUMBER_OF_STANDARD_VENTS)
           }
-          if (!atomicState.thermostat1Mode || atomicState.thermostat1Mode == 'auto') {
+          def currentMode = atomicState?.thermostat1Mode
+          if (!currentMode || currentMode == 'auto') {
             patchStructureData(['mode': 'manual'])
-            atomicState.thermostat1Mode = 'manual'
+            if (atomicState != null) {
+              atomicState.thermostat1Mode = 'manual'
+            }
           }
-        } else if (!atomicState.thermostat1Mode || atomicState.thermostat1Mode == 'manual') {
-          patchStructureData(['mode': 'auto'])
-          atomicState.thermostat1Mode = 'auto'
+        } else {
+          def currentMode = atomicState?.thermostat1Mode
+          if (!currentMode || currentMode == 'manual') {
+            patchStructureData(['mode': 'auto'])
+            if (atomicState != null) {
+              atomicState.thermostat1Mode = 'auto'
+            }
+          }
         }
         for (child in getChildDevices()) {
           input "thermostat${child.getId()}", 
@@ -322,7 +330,7 @@ void removeChildren() {
 }
 
 private logDetails(msg, details = null, level = 3) {
-  def settingsLevel = (settings?.debugLevel).toInteger()
+  def settingsLevel = (settings?.debugLevel ?: 0).toInteger()
   if (!details || (settingsLevel == 3 && level >= 2)) {
     log(msg, level)
   } else {
@@ -332,7 +340,7 @@ private logDetails(msg, details = null, level = 3) {
 
 // Level 1 is the most verbose
 private log(msg, level = 3) {
-  def settingsLevel = (settings?.debugLevel).toInteger()
+  def settingsLevel = (settings?.debugLevel ?: 0).toInteger()
   if (settingsLevel == 0) {
     return
   }
@@ -343,17 +351,18 @@ private log(msg, level = 3) {
 
 def isValidResponse(resp) {
   if (!resp) {
-    log.error('HTTP Null response')
+    log('HTTP Null response', 1)
     return false
   }
   try {
     if (resp.hasError()) {
       def respJson = groovy.json.JsonOutput.toJson(resp)
-      log.error("HTTP response: ${respJson}")
+      log("HTTP response: ${respJson}", 1)
       return false
     }
   } catch (err) {
-    log.error(err)
+    log("Error validating response: ${err}", 1)
+    return false
   }
   return true
 }
@@ -700,6 +709,11 @@ def thermostat1ChangeTemp(evt) {
 }
 
 def isThermostatAboutToChangeState(hvacMode, setpoint, temp) {
+  // Initialize tempDiffsInsideThreshold if null
+  if (atomicState.tempDiffsInsideThreshold == null) {
+    atomicState.tempDiffsInsideThreshold = false
+  }
+  
   if (hvacMode == COOLING && temp + SETPOINT_OFFSET_C - VENT_PRE_ADJUSTMENT_THRESHOLD_C < setpoint) {
     atomicState.tempDiffsInsideThreshold = false
     return false
@@ -935,8 +949,13 @@ def adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId, hvacMod
     maxTemp = maxTemp == null || maxTemp < stateVal.temp ? stateVal.temp : maxTemp
     minTemp = minTemp == null || minTemp > stateVal.temp ? stateVal.temp : minTemp
   }
-  minTemp = minTemp - 0.1
-  maxTemp = maxTemp + 0.1
+  if (minTemp == null || maxTemp == null) {
+    minTemp = 20.0
+    maxTemp = 25.0
+  } else {
+    minTemp = minTemp - 0.1
+    maxTemp = maxTemp + 0.1
+  }
   def combinedVentFlowPercentage = (100 * sumPercentages) / (totalDeviceCount * 100)
   if (combinedVentFlowPercentage >= MIN_COMBINED_VENT_FLOW_PERCENTAGE) {
     log("Combined vent flow percentage (${combinedVentFlowPercentage}) is greather than ${MIN_COMBINED_VENT_FLOW_PERCENTAGE}", 3)
@@ -1085,7 +1104,7 @@ def calculateRoomChangeRate(lastStartTemp, currentTemp, totalMinutes, percentOpe
   BigDecimal diffTemps = Math.abs(lastStartTemp - currentTemp)
   BigDecimal rate = diffTemps / totalMinutes
   BigDecimal pOpen = percentOpen / 100
-  BigDecimal maxRate = Math.max(rate, currentRate)
+  BigDecimal maxRate = Math.max(rate.doubleValue(), currentRate.doubleValue())
   BigDecimal approxEquivMaxRate = 0
   if (maxRate != 0) {
     approxEquivMaxRate = (rate / maxRate) / pOpen

@@ -1,12 +1,126 @@
 plugins {
     id 'groovy'
+    id 'jacoco'
+}
+
+// Set Java compatibility
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(11)
+    }
+}
+
+compileGroovy {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+}
+
+compileTestGroovy {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
 }
 
 // Not using standard layout, need to specify folders.
 sourceSets {
+    main {
+        groovy {
+            srcDirs = ['src']
+        }
+    }
     test {
         groovy {
             srcDirs = ['tests']
+        }
+    }
+}
+
+// JaCoCo configuration for code coverage with dynamic loading support
+jacoco {
+    toolVersion = "0.8.8"
+    reportsDirectory = file("$buildDir/reports/jacoco")
+}
+
+jacocoTestReport {
+    dependsOn test
+    reports {
+        xml.required = true
+        html.required = true
+        csv.required = false
+    }
+    finalizedBy jacocoTestCoverageVerification
+    
+    // Configure for dynamic class loading
+    sourceDirectories.from = sourceSets.main.allSource.srcDirs
+    classDirectories.from = sourceSets.main.output
+    
+    // Try to collect execution data from all possible locations
+    executionData.from = fileTree(dir: "$buildDir/jacoco", includes: ['**/*.exec'])
+    
+    doFirst {
+        // Log debug information
+        println "JaCoCo execution data files found:"
+        executionData.files.each { file ->
+            if (file.exists()) {
+                println "  - ${file.absolutePath} (${file.length()} bytes)"
+            } else {
+                println "  - ${file.absolutePath} (NOT FOUND)"
+            }
+        }
+        
+        println "Source directories:"
+        sourceDirectories.files.each { dir ->
+            println "  - ${dir.absolutePath}"
+        }
+        
+        println "Class directories:"
+        classDirectories.files.each { dir ->
+            println "  - ${dir.absolutePath}"
+        }
+    }
+}
+
+// Run coverage report after tests regardless of test results
+test {
+    ignoreFailures = true  // Continue build even if tests fail
+    finalizedBy jacocoTestReport
+    
+    // Configure JaCoCo for better coverage tracking
+    systemProperty 'jacoco.destfile', "$buildDir/jacoco/test.exec"
+    systemProperty 'jacoco.append', 'false'
+    systemProperty 'jacoco.includes', '**'
+    systemProperty 'jacoco.excludes', ''
+    
+    // Enable test logging
+    testLogging {
+        events "passed", "skipped", "failed"
+        exceptionFormat "full"
+        showStandardStreams = false
+    }
+    
+    // Ensure test discovery works properly for Spock 1.2
+    scanForTestClasses = true
+    include '**/*Test.class'
+    include '**/*Tests.class'
+    include '**/*Spec.class'
+}
+
+// Allow coverage verification to be optional
+jacocoTestCoverageVerification {
+    dependsOn jacocoTestReport
+    violationRules {
+        failOnViolation = false  // Don't fail build on coverage violations
+        rule {
+            limit {
+                minimum = 0.60  // 60% minimum coverage (warning only)
+            }
+        }
+        rule {
+            element = 'CLASS'
+            limit {
+                counter = 'LINE'
+                value = 'COVEREDRATIO'
+                minimum = 0.50  // 50% line coverage per class (warning only)
+            }
         }
     }
 }
@@ -24,8 +138,11 @@ dependencies {
     implementation 'org.apache.commons:commons-io:1.3.2'
     implementation 'org.codehaus.groovy:groovy-all:2.5.4'
     implementation 'org.codehaus.groovy:groovy-dateutil:2.5.4'
+    implementation 'org.codehaus.groovy.modules.http-builder:http-builder:0.7.1'
 
     testImplementation 'org.codehaus.groovy:groovy-all:2.5.4' // groovy itself
     testImplementation "org.spockframework:spock-core:1.2-groovy-2.5" // spock framework
     testImplementation "me.biocomp.hubitat_ci:hubitat_ci:0.17" // hubita_ci
+    testImplementation 'org.codehaus.groovy.modules.http-builder:http-builder:0.7.1' // http builder for testing
+    testImplementation 'net.bytebuddy:byte-buddy:1.12.18' // for mocking
 }

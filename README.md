@@ -39,6 +39,42 @@ Control and automation are at your fingertips. Each Flair vent appears as an ind
 - Set the **vent opening level** with `setLevel` (0 for closed, 100 for fully open).
 - Manage **room activity** using the `setRoomActive` command to strategically manage airflow based on room usage.
 
+## Development & Testing
+
+### Running Tests
+
+This project includes a comprehensive test suite covering all critical algorithms:
+
+```bash
+# Run all tests
+gradle test
+
+# Run tests with coverage report
+gradle clean test jacocoTestReport
+
+# View test results
+open build/reports/tests/test/index.html
+open build/reports/jacoco/test/html/index.html
+```
+
+### Test Coverage
+
+- **50+ test cases** covering Dynamic Airflow Balancing algorithms
+- **Mathematical precision** validation for temperature calculations
+- **Edge case testing** for robust error handling
+- **Multi-room scenarios** with realistic HVAC data
+- **Safety constraint validation** for minimum airflow requirements
+
+See [TESTING.md](TESTING.md) for detailed testing documentation.
+
+### Architecture
+
+The integration features advanced **Dynamic Airflow Balancing (DAB)** algorithms:
+- Temperature change rate learning per room
+- Predictive vent positioning using exponential models
+- Minimum airflow safety constraints
+- Rolling average calculations for efficiency optimization
+
 ## Support and Community
 Dive deeper into documentation, engage with community discussions, and receive support on the [Hubitat community forum thread](https://community.hubitat.com/t/new-control-flair-vents-with-hubitat-free-open-source-app-and-driver/132728).
 
