@@ -50,7 +50,7 @@ metadata {
         attribute 'room-temp-away-min-c', 'number'
         attribute 'room-level', 'string'
         attribute 'room-hold-until', 'string'
-        attribute 'room-away-mode', 'heat-cool-mode'
+        attribute 'room-away-mode', 'string'
         attribute 'room-heat-cool-mode', 'string'
         attribute 'room-updated-at', 'string'
         attribute 'room-state-updated-at', 'string'
@@ -73,7 +73,7 @@ metadata {
         attribute 'room-cooling-rate', 'number'
         attribute 'room-heating-rate', 'number'
 
-        command 'setRoomActive', [[name: 'roomActive',  type: 'ENUM', constraints: ['true', 'false']]]
+        command 'setRoomActive', ['string']
     }
 
     preferences {

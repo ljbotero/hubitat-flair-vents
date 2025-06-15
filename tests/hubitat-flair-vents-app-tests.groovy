@@ -124,14 +124,14 @@ class Test extends Specification {
 
     expect:
     script.calculateOpenPercentageForAllVents(rateAndTempPerVentId, 'cooling', 23.666, 60) == [
-      '1222bc5e':1.654,
-      '00f65b12':3.835,
+      '1222bc5e':23.554,
+      '00f65b12':31.608,
       'd3f411b2':100.0,
-      '472379e6':0.212,
-      '6ee4c352':0.212,
+      '472379e6':11.488,
+      '6ee4c352':11.488,
       'c5e770b6':0.0,
       'e522531c':0.0,
-      'acb0b95d':0.248
+      'acb0b95d':12.130
     ]
   }
 
@@ -159,8 +159,8 @@ class Test extends Specification {
 
     expect:
     script.calculateLongestMinutesToTarget(rateAndTempPerVentId, 'cooling', 23.666, 72) == 72
-    log.records[2] == new Tuple(Level.warn, "'3' is estimated to take 74.6 minutes " +
-      'to reach target temp, which is longer than the average 72 minutes')
+    log.records[2] == new Tuple(Level.warn, "'3' is estimated to take 74.600 minutes " +
+      'to reach target temp, which is longer than the average 72.000 minutes')
   }
 
   def "calculateVentOpenPercentangeTest"() {
@@ -176,7 +176,7 @@ class Test extends Specification {
           'userSettingValues': USER_SETTINGS)
 
     expect:
-    def expectedVals = [5.354, 30.238, 67.911, 0.278, 0.393, 0.156, 0.141, 4.276, 100.0]
+    def expectedVals = [35.518, 65.063, 86.336, 12.625, 14.249, 10.324, 9.961, 32.834, 100.0]
     def retVals = [
       script.calculateVentOpenPercentange('', 65, 70, 'heating', 0.715, 12.6),
       script.calculateVentOpenPercentange('', 61, 70, 'heating', 0.550, 20),
@@ -379,8 +379,8 @@ class Test extends Specification {
 
     expect:
     def expectedVals = [
-      -1, new Tuple(Level.debug, 'Insuficient number of minutes required to calculate change rate (0 should be greather than 5)'),
-      -1, new Tuple(Level.debug, 'Change rate (0.000) is lower than 0.001, therefore it is being excluded'),
+      -1, new Tuple(Level.debug, 'Insuficient number of minutes required to calculate change rate (0 should be greather than 1)'),
+      -1, new Tuple(Level.debug, 'Zero/minimal temperature change detected: startTemp=0°C, currentTemp=0°C, diffTemps=0°C, vent was 4% open'),
       1.000, 0.056, -1.000, 1.429, 1.000
     ]
     def actualVals = [

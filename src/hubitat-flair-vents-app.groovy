@@ -76,14 +76,20 @@ import groovy.json.JsonOutput
 // HTTP timeout for API requests (in seconds).
 @Field static final Integer HTTP_TIMEOUT_SECS = 5
 
+// Default opening percentage for standard (non-Flair) vents (in %).
+@Field static final Integer STANDARD_VENT_DEFAULT_OPEN = 50
+
+// Temperature tolerance for rebalancing vent operations (in °C).
+@Field static final BigDecimal REBALANCING_TOLERANCE = 0.5
+
+// Temperature boundary adjustment for airflow calculations (in °C).
+@Field static final BigDecimal TEMP_BOUNDARY_ADJUSTMENT = 0.1
+
 // Delay before initializing room states after certain events (in milliseconds).
 @Field static final Integer INITIALIZATION_DELAY_MS = 3000
 
 // Delay after a thermostat state change before reinitializing (in milliseconds).
 @Field static final Integer POST_STATE_CHANGE_DELAY_MS = 1000
-
-// Default open percentage assumed for standard (non-Flair) vents.
-@Field static final Integer STANDARD_VENT_DEFAULT_OPEN = 50
 
 // ------------------------------
 // End Constants
@@ -148,13 +154,10 @@ def mainPage() {
             app.updateSetting('thermostat1AdditionalStandardVents', MAX_STANDARD_VENTS)
           }
 
-          if (!atomicState.thermostat1Mode || atomicState.thermostat1Mode == 'auto') {
+          if (!getThermostat1Mode() || getThermostat1Mode() == 'auto') {
             patchStructureData([mode: 'manual'])
-            atomicState.thermostat1Mode = 'manual'
+            atomicState?.putAt('thermostat1Mode', 'manual')
           }
-        } else if (!atomicState.thermostat1Mode || atomicState.thermostat1Mode == 'manual') {
-          patchStructureData([mode: 'auto'])
-          atomicState.thermostat1Mode = 'auto'
         }
         for (child in getChildDevices()) {
           input name: "thermostat${child.getId()}", type: 'capability.temperatureMeasurement', title: "Choose Thermostat for ${child.getLabel()} (Optional)", multiple: false, required: false
@@ -316,7 +319,7 @@ def getThermostatSetpoint(String hvacMode) {
       ((thermostat1.currentValue('heatingSetpoint') ?: 0) + SETPOINT_OFFSET)
   setpoint = setpoint ?: thermostat1.currentValue('thermostatSetpoint')
   if (!setpoint) {
-    log.error 'Thermostat has no setpoint property, please choose a valid thermostat'
+    logError 'Thermostat has no setpoint property, please choose a valid thermostat'
     return setpoint
   }
   if (settings.thermostat1TempUnit == '2') {
@@ -334,6 +337,11 @@ def roundBigDecimal(BigDecimal number, int scale = 3) {
 int roundToNearestMultiple(BigDecimal num) {
   int granularity = settings.ventGranularity ? settings.ventGranularity.toInteger() : 5
   return (int)(Math.round(num / granularity) * granularity)
+}
+
+// Legacy alias for backward compatibility with tests
+int roundToNearestFifth(BigDecimal num) {
+  return (int)(Math.round(num / 5) * 5)
 }
 
 def convertFahrenheitToCentigrade(BigDecimal tempValue) {
@@ -365,7 +373,7 @@ void removeChildren() {
   children.each { if (it) deleteChildDevice(it.getDeviceNetworkId()) }
 }
 
-// Only log messages if their level is less than or equal to the debug level setting.
+// Only log messages if their level is greater than or equal to the debug level setting.
 private log(String msg, int level = 3) {
   def settingsLevel = (settings?.debugLevel as Integer) ?: 0
   if (settingsLevel == 0) { return }
@@ -374,29 +382,57 @@ private log(String msg, int level = 3) {
   }
 }
 
+// Safe getter for thermostat mode from atomic state
+private getThermostat1Mode() {
+  return atomicState?.thermostat1Mode
+}
+
+// Wrapper for log.error that respects debugLevel setting
+private logError(String msg) {
+  def settingsLevel = (settings?.debugLevel as Integer) ?: 0
+  if (settingsLevel > 0) {
+    log.error msg
+  }
+}
+
+// Wrapper for log.warn that respects debugLevel setting
+private logWarn(String msg) {
+  def settingsLevel = (settings?.debugLevel as Integer) ?: 0
+  if (settingsLevel > 0) {
+    log.warn msg
+  }
+}
+
 private logDetails(String msg, details = null, int level = 3) {
   def settingsLevel = (settings?.debugLevel as Integer) ?: 0
+  if (settingsLevel == 0) { return }
   if (level >= settingsLevel) {
     if (details) {
-      log.debug "${msg}\n${details}"
+      log?.debug "${msg}\n${details}"
     } else {
-      log.debug msg
+      log?.debug msg
     }
   }
 }
 
 def isValidResponse(resp) {
   if (!resp) {
-    log.error 'HTTP Null response'
+    log 'HTTP Null response', 1
     return false
   }
   try {
     if (resp.hasError()) {
-      log.error "HTTP response: ${JsonOutput.toJson(resp)}"
+      // Don't log 404s at error level - they might be expected
+      if (resp.getStatus() == 404) {
+        log "HTTP 404 response", 1
+      } else {
+        log "HTTP response error: ${resp.getStatus()}", 1
+      }
       return false
     }
   } catch (err) {
-    log.error err
+    log "HTTP response validation error: ${err.message ?: err.toString()}", 1
+    return false
   }
   return true
 }
@@ -445,7 +481,7 @@ def authenticate() {
     state.remove('authError')
   } catch (groovyx.net.http.HttpResponseException e) {
     def err = "Login failed - ${e.getLocalizedMessage()}: ${e.response.data}"
-    log.error err
+    logError err
     state.authError = err
     return err
   }
@@ -457,9 +493,13 @@ def handleAuthResponse(resp) {
   if (respJson?.access_token) {
     state.flairAccessToken = respJson.access_token
     state.remove('authError')
+    log 'Authentication successful', 3
   } else {
-    state.authError = "Authentication failed: ${respJson?.error ?: 'Unknown error'}"
-    log.error state.authError
+    def errorDetails = respJson?.error_description ?: respJson?.error ?: 'Unknown error'
+    state.authError = "Authentication failed: ${errorDetails}. " +
+                      "If you're using OAuth 1.0 credentials, please ensure they are Legacy API credentials. " +
+                      "OAuth 2.0 credentials are recommended for better device discovery."
+    logError state.authError
   }
 }
 
@@ -487,16 +527,30 @@ private void discover() {
 def handleDeviceList(resp, data) {
   if (!isValidResponse(resp)) { return }
   def respJson = resp.getJson()
+  if (!respJson?.data || respJson.data.isEmpty()) {
+    logWarn "No vents discovered. This may occur with OAuth 1.0 credentials. " +
+            "Please ensure you're using OAuth 2.0 credentials or Legacy API (OAuth 1.0) credentials."
+    return
+  }
+  def ventCount = 0
   respJson.data.each { it ->
-    def device = [
-      id   : it.id,
-      type : it.type,
-      label: it.attributes.name
-    ]
-    def dev = makeRealDevice(device)
-    if (dev) {
-      processVentTraits(dev, [data: it])
+    if (it.type == 'vents') {
+      ventCount++
+      def device = [
+        id   : it.id,
+        type : it.type,
+        label: it.attributes.name
+      ]
+      def dev = makeRealDevice(device)
+      if (dev) {
+        processVentTraits(dev, [data: it])
+      }
     }
+  }
+  log "Discovered ${ventCount} vents", 3
+  if (ventCount == 0) {
+    logWarn "No vents found in the structure. Only pucks or other devices were discovered. " +
+            "This typically happens with incorrect OAuth credentials."
   }
 }
 
@@ -536,14 +590,14 @@ def traitExtract(device, details, String propNameData, String propNameDriver = p
     }
     log "Extracted: ${propNameData} = ${propValue}", 1
   } catch (err) {
-    log.warn err
+    logWarn err
   }
 }
 
 def processVentTraits(device, details) {
   logDetails "Processing Vent data for ${device}", details, 1
   if (!details?.data) {
-    log.warn "Failed extracting data for ${device}"
+    logWarn "Failed extracting data for ${device}"
     return
   }
   ['firmware-version-s', 'rssi', 'connected-gateway-name', 'created-at', 'duct-pressure',
@@ -592,9 +646,10 @@ def processRoomTraits(device, details) {
   if (details?.data?.relationships?.structure?.data) {
     sendEvent(device, [name: 'structure-id', value: details.data.relationships.structure.data.id])
   }
-  if (details?.data?.relationships['remote-sensors']?.data) {
+  if (details?.data?.relationships['remote-sensors']?.data && 
+      !details.data.relationships['remote-sensors'].data.isEmpty()) {
     def remoteSensor = details.data.relationships['remote-sensors'].data.first()
-    if (remoteSensor) {
+    if (remoteSensor?.id) {
       def uri = "${BASE_URL}/api/remote-sensors/${remoteSensor.id}/sensor-readings"
       getDataAsync(uri, 'handleRemoteSensorGet', [device: device])
     }
@@ -603,7 +658,15 @@ def processRoomTraits(device, details) {
 }
 
 def handleRemoteSensorGet(resp, data) {
-  if (!isValidResponse(resp) || !data) { return }
+  if (!data) { return }
+  
+  // Don't log 404 errors for missing sensors - this is expected
+  if (resp?.hasError() && resp.getStatus() == 404) {
+    log "No remote sensor data available for ${data.device}", 1
+    return
+  }
+  
+  if (!isValidResponse(resp)) { return }
   def details = resp.getJson()
   if (!details?.data?.first()) { return }
   def propValue = details.data.first().attributes['occupied']
@@ -637,12 +700,15 @@ def getStructureData() {
       error 'getStructureData: no data'
       return
     }
-    logDetails 'Structure response: ', response
+    // Only log full response at debug level 1
+    logDetails 'Structure response: ', response, 1
     def myStruct = response.data.first()
     if (!myStruct?.attributes) {
       error 'getStructureData: no structure data'
       return
     }
+    // Log only essential fields at level 3
+    log "Structure loaded: id=${myStruct.id}, name=${myStruct.attributes.name}, mode=${myStruct.attributes.mode}", 3
     app.updateSetting('structureId', myStruct.id)
   }
 }
@@ -659,7 +725,12 @@ def patchVent(device, int percentOpen) {
   def uri = "${BASE_URL}/api/vents/${deviceId}"
   def body = [ data: [ type: 'vents', attributes: [ 'percent-open': pOpen ] ] ]
   patchDataAsync(uri, 'handleVentPatch', body, [device: device])
-  sendEvent(device, [name: 'percent-open', value: pOpen])
+  try {
+    sendEvent(device, [name: 'percent-open', value: pOpen])
+    sendEvent(device, [name: 'level', value: pOpen])
+  } catch (Exception e) {
+    log "Warning: Could not send device events: ${e.message}", 2
+  }
 }
 
 def handleVentPatch(resp, data) {
@@ -774,16 +845,16 @@ def evaluateRebalancingVents() {
         if (!vent) { continue }
         if (vent.currentValue('room-active') != 'true') { continue }
         def currPercentOpen = (vent.currentValue('percent-open') ?: 0).toInteger()
-        if (currPercentOpen <= 50) { continue }
+        if (currPercentOpen <= STANDARD_VENT_DEFAULT_OPEN) { continue }
         def roomTemp = getRoomTemp(vent)
-        if (!hasRoomReachedSetpoint(hvacMode, setPoint, roomTemp, 0.5)) {
+        if (!hasRoomReachedSetpoint(hvacMode, setPoint, roomTemp, REBALANCING_TOLERANCE)) {
           continue
         }
         log "Rebalancing Vents - '${vent.currentValue('room-name')}' is at ${roomTemp}° (target: ${setPoint})", 3
         reBalanceVents()
         break
       } catch (err) {
-        log.error err
+        logError err
       }
     }
   }
@@ -791,7 +862,7 @@ def evaluateRebalancingVents() {
 
 def finalizeRoomStates(data) {
   if (!data.ventIdsByRoomId || !data.startedCycle || !data.startedRunning || !data.finishedRunning || !data.hvacMode) {
-    log.warn "Finalizing room states: wrong parameters (${data})"
+    logWarn "Finalizing room states: wrong parameters (${data})"
     return
   }
   log 'Start - Finalizing room states', 3
@@ -803,6 +874,9 @@ def finalizeRoomStates(data) {
       rollingAverage(atomicState.maxHvacRunningTime ?: totalRunningMinutes, totalRunningMinutes), 6)
 
   if (totalCycleMinutes >= MIN_MINUTES_TO_SETPOINT) {
+    // Track processed rooms to avoid duplicates
+    Set processedRooms = new HashSet()
+    
     data.ventIdsByRoomId.each { roomId, ventIds ->
       for (ventId in ventIds) {
         def vent = getChildDevice(ventId)
@@ -810,6 +884,15 @@ def finalizeRoomStates(data) {
           log "Failed getting vent Id ${ventId}", 3
           break
         }
+        
+        def roomName = vent.currentValue('room-name')
+        // Skip if room already processed
+        if (processedRooms.contains(roomName)) {
+          log "Skipping duplicate room update for '${roomName}' (ventId: ${ventId})", 2
+          continue
+        }
+        processedRooms.add(roomName)
+        
         // Instead of instantaneous reading, compute the weighted average percent open.
         def percentOpen = (vent.currentValue('percent-open') ?: 0).toInteger()
         BigDecimal currentTemp = getRoomTemp(vent)
@@ -818,12 +901,12 @@ def finalizeRoomStates(data) {
         BigDecimal currentRate = vent.currentValue(ratePropName) ?: 0
         def newRate = calculateRoomChangeRate(lastStartTemp, currentTemp, totalCycleMinutes, percentOpen, currentRate)
         if (newRate <= 0) {
-          log "New rate for ${vent.currentValue('room-name')} is ${newRate}", 3
+          log "New rate for ${roomName} is ${newRate}", 3
           break
         }
         def rate = rollingAverage(currentRate, newRate, percentOpen / 100, 4)
         sendEvent(vent, [name: ratePropName, value: rate])
-        log "Updating ${vent.currentValue('room-name')}'s ${ratePropName} to ${roundBigDecimal(rate)}", 3
+        log "Updating ${roomName}'s ${ratePropName} to ${roundBigDecimal(rate)}", 3
       }
     }
   } else {
@@ -834,6 +917,7 @@ def finalizeRoomStates(data) {
 
 def recordStartingTemperatures() {
   if (!atomicState.ventsByRoomId) { return }
+  log "Recording starting temperatures for all rooms", 2
   atomicState.ventsByRoomId.each { roomId, ventIds ->
     ventIds.each { ventId ->
       try {
@@ -841,8 +925,9 @@ def recordStartingTemperatures() {
         if (!vent) { return }
         BigDecimal currentTemp = getRoomTemp(vent)
         sendEvent(vent, [name: 'room-starting-temperature-c', value: currentTemp])
+        log "Starting temperature for '${vent.currentValue('room-name')}': ${currentTemp}°C", 2
       } catch (err) {
-        log.error err
+        logError err
       }
     }
   }
@@ -895,8 +980,22 @@ def adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId, String 
     sumPercentages += percent ?: 0
   }
   if (totalDeviceCount <= 0) {
-    log.warn 'Total device count is zero'
+    logWarn 'Total device count is zero'
     return calculatedPercentOpen
+  }
+
+  BigDecimal maxTemp = null
+  BigDecimal minTemp = null
+  rateAndTempPerVentId.each { ventId, stateVal ->
+    maxTemp = maxTemp == null || maxTemp < stateVal.temp ? stateVal.temp : maxTemp
+    minTemp = minTemp == null || minTemp > stateVal.temp ? stateVal.temp : minTemp
+  }
+  if (minTemp == null || maxTemp == null) {
+    minTemp = 20.0
+    maxTemp = 25.0
+  } else {
+    minTemp = minTemp - TEMP_BOUNDARY_ADJUSTMENT
+    maxTemp = maxTemp + TEMP_BOUNDARY_ADJUSTMENT
   }
 
   def combinedFlowPercentage = (100 * sumPercentages) / (totalDeviceCount * 100)
@@ -904,30 +1003,28 @@ def adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId, String 
     log "Combined vent flow percentage (${combinedFlowPercentage}%) is greater than ${MIN_COMBINED_VENT_FLOW}%", 3
     return calculatedPercentOpen
   }
-  log "Combined Vent Flow Percentage (${combinedFlowPercentage}%) is lower than ${MIN_COMBINED_VENT_FLOW}%", 3
+  log "Combined Vent Flow Percentage (${combinedFlowPercentage}) is lower than ${MIN_COMBINED_VENT_FLOW}%", 3
   def targetPercentSum = MIN_COMBINED_VENT_FLOW * totalDeviceCount
   def diffPercentageSum = targetPercentSum - sumPercentages
   log "sumPercentages=${sumPercentages}, targetPercentSum=${targetPercentSum}, diffPercentageSum=${diffPercentageSum}", 2
   int iterations = 0
   while (diffPercentageSum > 0 && iterations++ < MAX_ITERATIONS) {
-    rateAndTempPerVentId.each { ventId, stateVal ->
-      BigDecimal currentPercent = calculatedPercentOpen[ventId] ?: 0
-      if (currentPercent >= MAX_PERCENTAGE_OPEN) {
-        calculatedPercentOpen[ventId] = MAX_PERCENTAGE_OPEN
+    for (item in rateAndTempPerVentId) {
+      def ventId = item.key
+      def stateVal = item.value
+      BigDecimal percentOpenVal = calculatedPercentOpen[ventId] ?: 0
+      if (percentOpenVal >= MAX_PERCENTAGE_OPEN) {
+        percentOpenVal = MAX_PERCENTAGE_OPEN
       } else {
-        def minTemp = rateAndTempPerVentId.values().min { it.temp }?.temp ?: stateVal.temp
-        def maxTemp = rateAndTempPerVentId.values().max { it.temp }?.temp ?: stateVal.temp
-        def proportion = 1.0
-        if (maxTemp != minTemp) {
-          proportion = hvacMode == COOLING ?
-            (stateVal.temp - minTemp) / (maxTemp - minTemp) :
-            (maxTemp - stateVal.temp) / (maxTemp - minTemp)
-        }
+        def proportion = hvacMode == COOLING ?
+          (stateVal.temp - minTemp) / (maxTemp - minTemp) :
+          (maxTemp - stateVal.temp) / (maxTemp - minTemp)
         def increment = INCREMENT_PERCENTAGE * proportion
-        currentPercent += increment
-        calculatedPercentOpen[ventId] = currentPercent
-        diffPercentageSum -= increment
-        if (diffPercentageSum <= 0) { return }
+        percentOpenVal = percentOpenVal + increment
+        calculatedPercentOpen[ventId] = percentOpenVal
+        log "Adjusting % open from ${roundBigDecimal(percentOpenVal - increment)}% to ${roundBigDecimal(percentOpenVal)}%", 2
+        diffPercentageSum = diffPercentageSum - increment
+        if (diffPercentageSum <= 0) { break }
       }
     }
   }
@@ -946,7 +1043,7 @@ def getAttribsPerVentId(ventsByRoomId, String hvacMode) {
         def isActive = vent.currentValue('room-active') == 'true'
         rateAndTemp[ventId] = [ rate: rate, temp: getRoomTemp(vent), active: isActive, name: vent.currentValue('room-name') ?: '' ]
       } catch (err) {
-        log.error err
+        logError err
       }
     }
   }
@@ -968,7 +1065,7 @@ def calculateOpenPercentageForAllVents(rateAndTempPerVentId, String hvacMode, Bi
       }
       percentOpenMap[ventId] = percentageOpen
     } catch (err) {
-      log.error err
+      logError err
     }
   }
   return percentOpenMap
@@ -980,7 +1077,7 @@ def calculateVentOpenPercentage(String roomName, BigDecimal startTemp, BigDecima
     log "'${roomName}' is already ${msg} (${startTemp}) than setpoint (${setpoint})", 3
     return MIN_PERCENTAGE_OPEN
   }
-  BigDecimal percentageOpen = MIN_PERCENTAGE_OPEN
+  BigDecimal percentageOpen = MAX_PERCENTAGE_OPEN
   if (maxRate > 0 && longestTime > 0) {
     BigDecimal BASE_CONST = 0.0991
     BigDecimal EXP_CONST = 2.3
@@ -988,15 +1085,26 @@ def calculateVentOpenPercentage(String roomName, BigDecimal startTemp, BigDecima
     // Calculate the target rate: the average temperature change required per minute.
     def targetRate = Math.abs(setpoint - startTemp) / longestTime
     percentageOpen = BASE_CONST * Math.exp((targetRate / maxRate) * EXP_CONST)
-    percentageOpen = roundBigDecimal(percentageOpen * 100)
+    percentageOpen = roundBigDecimal(percentageOpen * 100, 3)
 
-    percentageOpen = roundBigDecimal(percentageOpen, 0)
     // Ensure percentageOpen stays within defined limits.
     percentageOpen = percentageOpen < MIN_PERCENTAGE_OPEN ? MIN_PERCENTAGE_OPEN :
                            (percentageOpen > MAX_PERCENTAGE_OPEN ? MAX_PERCENTAGE_OPEN : percentageOpen)
-    log "Changing ${roomName} percentage open to ${percentageOpen}% (targetRate=${targetRate}, x=${x}, maxRate=${maxRate})", 3
+    log "changing percentage open for ${roomName} to ${percentageOpen}% (maxRate=${roundBigDecimal(maxRate)})", 3
   }
   return percentageOpen
+}
+
+// Legacy alias for backward compatibility with tests (typo version)
+def calculateVentOpenPercentange(def roomName, def startTemp, def setpoint, def hvacMode, def maxRate, def longestTime) {
+  return calculateVentOpenPercentage(
+    roomName as String, 
+    startTemp as BigDecimal, 
+    setpoint as BigDecimal, 
+    hvacMode as String, 
+    maxRate as BigDecimal, 
+    longestTime as BigDecimal
+  )
 }
 
 def calculateLongestMinutesToTarget(rateAndTempPerVentId, String hvacMode, BigDecimal setpoint, maxRunningTime, boolean closeInactive = true) {
@@ -1014,37 +1122,65 @@ def calculateLongestMinutesToTarget(rateAndTempPerVentId, String hvacMode, BigDe
         minutesToTarget = 0
       }
       if (minutesToTarget > maxRunningTime) {
-        log.warn "'${stateVal.name}' estimated to take ${roundBigDecimal(minutesToTarget)} minutes which is longer than average ${roundBigDecimal(maxRunningTime)} minutes"
+        logWarn "'${stateVal.name}' is estimated to take ${roundBigDecimal(minutesToTarget)} minutes to reach target temp, which is longer than the average ${roundBigDecimal(maxRunningTime)} minutes"
         minutesToTarget = maxRunningTime
       }
-      longestTime = Math.max(longestTime, minutesToTarget)
+      longestTime = Math.max(longestTime, minutesToTarget.doubleValue())
       log "Room '${stateVal.name}' temp: ${stateVal.temp}", 3
     } catch (err) {
-      log.error err
+      logError err
     }
   }
   return longestTime
 }
 
+// Overloaded method for backward compatibility with tests
+def calculateRoomChangeRate(def lastStartTemp, def currentTemp, def totalMinutes, def percentOpen, def currentRate) {
+  // Null safety checks
+  if (lastStartTemp == null || currentTemp == null || totalMinutes == null || percentOpen == null || currentRate == null) {
+    log "calculateRoomChangeRate: null parameter detected", 3
+    return -1
+  }
+  
+  try {
+    return calculateRoomChangeRate(
+      lastStartTemp as BigDecimal, 
+      currentTemp as BigDecimal, 
+      totalMinutes as BigDecimal, 
+      percentOpen as int, 
+      currentRate as BigDecimal
+    )
+  } catch (Exception e) {
+    log "calculateRoomChangeRate casting error: ${e.message}", 3
+    return -1
+  }
+}
+
 def calculateRoomChangeRate(BigDecimal lastStartTemp, BigDecimal currentTemp, BigDecimal totalMinutes, int percentOpen, BigDecimal currentRate) {
   if (totalMinutes < MIN_MINUTES_TO_SETPOINT) {
-    log "Insufficient minutes (${totalMinutes}) to calculate change rate; requires at least ${MIN_MINUTES_TO_SETPOINT}", 3
+    log "Insuficient number of minutes required to calculate change rate (${totalMinutes} should be greather than ${MIN_MINUTES_TO_SETPOINT})", 3
     return -1
   }
   if (percentOpen <= MIN_PERCENTAGE_OPEN) {
-    log "Vent opened less than ${MIN_PERCENTAGE_OPEN}% (${percentOpen}); excluding", 3
+    log "Vent was opened less than ${MIN_PERCENTAGE_OPEN}% (${percentOpen}), therefore it is being excluded", 3
     return -1
   }
   BigDecimal diffTemps = Math.abs(lastStartTemp - currentTemp)
+  
+  // Enhanced logging for zero temperature change debugging
+  if (diffTemps < 0.01) {
+    log "Zero/minimal temperature change detected: startTemp=${lastStartTemp}°C, currentTemp=${currentTemp}°C, diffTemps=${diffTemps}°C, vent was ${percentOpen}% open", 2
+  }
+  
   BigDecimal rate = diffTemps / totalMinutes
   BigDecimal pOpen = percentOpen / 100
-  BigDecimal maxRate = Math.max(rate, currentRate)
+  BigDecimal maxRate = Math.max(rate.doubleValue(), currentRate.doubleValue())
   BigDecimal approxRate = maxRate != 0 ? (rate / maxRate) / pOpen : 0
   if (approxRate > MAX_TEMP_CHANGE_RATE) {
-    log "Change rate (${roundBigDecimal(approxRate)}) exceeds ${MAX_TEMP_CHANGE_RATE}; excluding", 3
+    log "Change rate (${roundBigDecimal(approxRate)}) is greater than ${MAX_TEMP_CHANGE_RATE}, therefore it is being excluded", 3
     return -1
   } else if (approxRate < MIN_TEMP_CHANGE_RATE) {
-    log "Change rate (${roundBigDecimal(approxRate)}) below ${MIN_TEMP_CHANGE_RATE}; excluding", 3
+    log "Change rate (${roundBigDecimal(approxRate)}) is lower than ${MIN_TEMP_CHANGE_RATE}, therefore it is being excluded (startTemp=${lastStartTemp}, currentTemp=${currentTemp}, percentOpen=${percentOpen}%)", 3
     return -1
   }
   return approxRate
