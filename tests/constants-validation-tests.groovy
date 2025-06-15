@@ -44,9 +44,9 @@ class ConstantsValidationTest extends Specification {
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
 
     expect:
-    script.MAX_TEMP_CHANGE_RATE_C == 1.5
-    script.MIN_TEMP_CHANGE_RATE_C == 0.001
-    script.SETPOINT_OFFSET_C == 0.7
+    script.MAX_TEMP_CHANGE_RATE == 1.5
+    script.MIN_TEMP_CHANGE_RATE == 0.001
+    script.SETPOINT_OFFSET == 0.7
   }
 
   def "Constants Test - Percentage Limits"() {
@@ -60,7 +60,7 @@ class ConstantsValidationTest extends Specification {
     expect:
     script.MIN_PERCENTAGE_OPEN == 0.0
     script.MAX_PERCENTAGE_OPEN == 100.0
-    script.MIN_COMBINED_VENT_FLOW_PERCENTAGE == 30.0
+    script.MIN_COMBINED_VENT_FLOW == 30.0
   }
 
   def "Constants Test - Time Limits"() {
@@ -86,9 +86,10 @@ class ConstantsValidationTest extends Specification {
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
 
     expect:
-    script.BASE_CONST == 0.0991
-    script.EXP_CONST == 2.3
+    // Note: BASE_CONST and EXP_CONST are now defined inside calculateVentOpenPercentage function
+    // so we can't test them as global constants anymore
     script.MAX_ITERATIONS == 500
+    script.INCREMENT_PERCENTAGE == 1.5
   }
 
   def "Constants Test - HVAC Mode Strings"() {
@@ -115,9 +116,9 @@ class ConstantsValidationTest extends Specification {
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
 
     expect:
-    script.MAX_NUMBER_OF_STANDARD_VENTS == 15
-    script.MILLIS_DELAY_TEMP_READINGS == 30000
-    script.INREMENT_PERCENTAGE_WHEN_REACHING_VENT_FLOW_TAGET == 1.5
+    script.MAX_STANDARD_VENTS == 15
+    script.TEMP_READINGS_DELAY_MS == 30000
+    script.INCREMENT_PERCENTAGE == 1.5
   }
 
   def "Validation Test - Vent Pre-adjustment Threshold"() {
@@ -129,7 +130,7 @@ class ConstantsValidationTest extends Specification {
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
 
     expect:
-    script.VENT_PRE_ADJUSTMENT_THRESHOLD_C == 0.2
+    script.VENT_PRE_ADJUST_THRESHOLD == 0.2
   }
 
   def "Validation Test - Content Type"() {

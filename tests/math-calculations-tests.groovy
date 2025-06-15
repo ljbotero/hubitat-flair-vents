@@ -18,10 +18,11 @@ class MathCalculationsTest extends Specification {
             Flags.DontValidatePreferences,
             Flags.DontValidateDefinition,
             Flags.DontRestrictGroovy,
-            Flags.DontRequireParseMethodInDevice
+            Flags.DontRequireParseMethodInDevice,
+            Flags.AllowReadingNonInputSettings
           ]
 
-  def "roundToNearestFifthTest - Standard Cases"() {
+  def "roundToNearestMultipleTest - Standard Cases"() {
     setup:
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
@@ -30,14 +31,14 @@ class MathCalculationsTest extends Specification {
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
 
     expect:
-    script.roundToNearestFifth(12.4) == 10
-    script.roundToNearestFifth(12.5) == 15
-    script.roundToNearestFifth(12.6) == 15
-    script.roundToNearestFifth(95.6) == 95
-    script.roundToNearestFifth(97.5) == 100
+    script.roundToNearestMultiple(12.4) == 10
+    script.roundToNearestMultiple(12.5) == 15
+    script.roundToNearestMultiple(12.6) == 15
+    script.roundToNearestMultiple(95.6) == 95
+    script.roundToNearestMultiple(97.5) == 100
   }
 
-  def "roundToNearestFifthTest - Edge Cases"() {
+  def "roundToNearestMultipleTest - Edge Cases"() {
     setup:
     AppExecutor executorApi = Mock {
       _ * getState() >> [:]
@@ -46,13 +47,13 @@ class MathCalculationsTest extends Specification {
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
 
     expect:
-    script.roundToNearestFifth(0) == 0
-    script.roundToNearestFifth(2.5) == 5
-    script.roundToNearestFifth(7.5) == 10
-    script.roundToNearestFifth(100) == 100
-    script.roundToNearestFifth(102.5) == 105  // Function doesn't cap at 100
-    script.roundToNearestFifth(-2.5) == 0
-    script.roundToNearestFifth(-7.5) == -5
+    script.roundToNearestMultiple(0) == 0
+    script.roundToNearestMultiple(2.5) == 5
+    script.roundToNearestMultiple(7.5) == 10
+    script.roundToNearestMultiple(100) == 100
+    script.roundToNearestMultiple(102.5) == 105  // Function doesn't cap at 100
+    script.roundToNearestMultiple(-2.5) == 0
+    script.roundToNearestMultiple(-7.5) == -5
   }
 
   def "rollingAverageTest - Basic Scenarios"() {

@@ -22,7 +22,7 @@ class VentOpeningCalculationsTest extends Specification {
           ]
   private static final AbstractMap USER_SETTINGS = ['debugLevel': 1, 'thermostat1CloseInactiveRooms': true]
 
-  def "calculateVentOpenPercentangeTest - Basic Scenarios"() {
+  def "calculateVentOpenPercentageTest - Basic Scenarios"() {
     setup:
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
@@ -37,20 +37,20 @@ class VentOpeningCalculationsTest extends Specification {
     expect:
     def expectedVals = [35.518, 65.063, 86.336, 12.625, 14.249, 10.324, 9.961, 32.834, 100.0]
     def retVals = [
-      script.calculateVentOpenPercentange('', 65, 70, 'heating', 0.715, 12.6),
-      script.calculateVentOpenPercentange('', 61, 70, 'heating', 0.550, 20),
-      script.calculateVentOpenPercentange('', 98, 82, 'cooling', 0.850, 20),
-      script.calculateVentOpenPercentange('', 84, 82, 'cooling', 0.950, 20),
-      script.calculateVentOpenPercentange('', 85, 82, 'cooling', 0.950, 20),
-      script.calculateVentOpenPercentange('', 86, 82, 'cooling', 2.5, 90),
-      script.calculateVentOpenPercentange('', 87, 82, 'cooling', 2.5, 900),
-      script.calculateVentOpenPercentange('', 87, 85, 'cooling', 0.384, 10),
-      script.calculateVentOpenPercentange('', 87, 85, 'cooling', 0, 10)
+      script.calculateVentOpenPercentage('', 65, 70, 'heating', 0.715, 12.6),
+      script.calculateVentOpenPercentage('', 61, 70, 'heating', 0.550, 20),
+      script.calculateVentOpenPercentage('', 98, 82, 'cooling', 0.850, 20),
+      script.calculateVentOpenPercentage('', 84, 82, 'cooling', 0.950, 20),
+      script.calculateVentOpenPercentage('', 85, 82, 'cooling', 0.950, 20),
+      script.calculateVentOpenPercentage('', 86, 82, 'cooling', 2.5, 90),
+      script.calculateVentOpenPercentage('', 87, 82, 'cooling', 2.5, 900),
+      script.calculateVentOpenPercentage('', 87, 85, 'cooling', 0.384, 10),
+      script.calculateVentOpenPercentage('', 87, 85, 'cooling', 0, 10)
     ]
     expectedVals == retVals
   }
 
-  def "calculateVentOpenPercentangeTest - Already Reached Setpoint"() {
+  def "calculateVentOpenPercentageTest - Already Reached Setpoint"() {
     setup:
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
@@ -63,13 +63,13 @@ class VentOpeningCalculationsTest extends Specification {
           'userSettingValues': USER_SETTINGS)
 
     expect:
-    script.calculateVentOpenPercentange('', 75, 70, 'heating', 0.1, 1) == 0
+    script.calculateVentOpenPercentage('', 75, 70, 'heating', 0.1, 1) == 0
     log.records[0] == new Tuple(Level.debug, "'' is already warmer (75) than setpoint (70)")
-    script.calculateVentOpenPercentange('', 75, 80, 'cooling', 0.1, 1) == 0
+    script.calculateVentOpenPercentage('', 75, 80, 'cooling', 0.1, 1) == 0
     log.records[1] == new Tuple(Level.debug, "'' is already cooler (75) than setpoint (80)")
   }
 
-  def "calculateVentOpenPercentangeTest - Extreme Values"() {
+  def "calculateVentOpenPercentageTest - Extreme Values"() {
     setup:
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
@@ -83,22 +83,22 @@ class VentOpeningCalculationsTest extends Specification {
 
     expect:
     // Zero rate (should return 100%)
-    script.calculateVentOpenPercentange('TestRoom', 20, 25, 'heating', 0, 10) == 100.0
+    script.calculateVentOpenPercentage('TestRoom', 20, 25, 'heating', 0, 10) == 100.0
     
     // Very high rate (actual calculation based on exponential formula)
-    script.calculateVentOpenPercentange('TestRoom', 15, 25, 'heating', 10.0, 30) == 10.700
+    script.calculateVentOpenPercentage('TestRoom', 15, 25, 'heating', 10.0, 30) == 10.700
     
     // Very low rate (should return 100% - use MIN_TEMP_CHANGE_RATE_C = 0.001)
-    script.calculateVentOpenPercentange('TestRoom', 20, 25, 'heating', 0.001, 30) == 100.0
+    script.calculateVentOpenPercentage('TestRoom', 20, 25, 'heating', 0.001, 30) == 100.0
     
     // Zero time to target (should return 100%)
-    script.calculateVentOpenPercentange('TestRoom', 20, 25, 'heating', 0.5, 0) == 100.0
+    script.calculateVentOpenPercentage('TestRoom', 20, 25, 'heating', 0.5, 0) == 100.0
     
     // Negative time to target (should return 100%)
-    script.calculateVentOpenPercentange('TestRoom', 20, 25, 'heating', 0.5, -10) == 100.0
+    script.calculateVentOpenPercentage('TestRoom', 20, 25, 'heating', 0.5, -10) == 100.0
   }
 
-  def "calculateVentOpenPercentangeTest - Boundary Conditions"() {
+  def "calculateVentOpenPercentageTest - Boundary Conditions"() {
     setup:
     final log = new CapturingLog()
     AppExecutor executorApi = Mock {
@@ -112,15 +112,15 @@ class VentOpeningCalculationsTest extends Specification {
 
     expect:
     // Test minimum and maximum percentage bounds
-    def result1 = script.calculateVentOpenPercentange('TestRoom', 20, 25, 'heating', 0.1, 60)
+    def result1 = script.calculateVentOpenPercentage('TestRoom', 20, 25, 'heating', 0.1, 60)
     result1 >= 0.0 && result1 <= 100.0
     
     // Test with very small temperature differences
-    def result2 = script.calculateVentOpenPercentange('TestRoom', 20.001, 20.002, 'heating', 0.1, 60)
+    def result2 = script.calculateVentOpenPercentage('TestRoom', 20.001, 20.002, 'heating', 0.1, 60)
     result2 >= 0.0 && result2 <= 100.0
     
     // Test with large temperature differences
-    def result3 = script.calculateVentOpenPercentange('TestRoom', 10, 30, 'heating', 0.5, 60)
+    def result3 = script.calculateVentOpenPercentage('TestRoom', 10, 30, 'heating', 0.5, 60)
     result3 >= 0.0 && result3 <= 100.0
   }
 
