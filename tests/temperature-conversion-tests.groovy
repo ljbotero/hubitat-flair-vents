@@ -23,7 +23,7 @@ class TemperatureConversionTest extends Specification {
             Flags.AllowReadingNonInputSettings
           ]
 
-  def "convertFahrenheitToCentigradesTest - Common Conversions"() {
+  def "convertFahrenheitToCentigradeTest - Common Conversions"() {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
@@ -33,14 +33,14 @@ class TemperatureConversionTest extends Specification {
 
     expect:
     // Test common conversions with precision tolerance
-    Math.abs(script.convertFahrenheitToCentigrades(32) - 0) < 0.01      // Freezing point
-    Math.abs(script.convertFahrenheitToCentigrades(212) - 100) < 0.01   // Boiling point - actual result is 100.0000000080
-    Math.abs(script.convertFahrenheitToCentigrades(68) - 20) < 0.01     // Room temperature
-    Math.abs(script.convertFahrenheitToCentigrades(98.6) - 37) < 0.01   // Body temperature
-    Math.abs(script.convertFahrenheitToCentigrades(-40) - (-40)) < 0.01   // Same in both scales
+    Math.abs(script.convertFahrenheitToCentigrade(32) - 0) < 0.01      // Freezing point
+    Math.abs(script.convertFahrenheitToCentigrade(212) - 100) < 0.01   // Boiling point - actual result is 100.0000000080
+    Math.abs(script.convertFahrenheitToCentigrade(68) - 20) < 0.01     // Room temperature
+    Math.abs(script.convertFahrenheitToCentigrade(98.6) - 37) < 0.01   // Body temperature
+    Math.abs(script.convertFahrenheitToCentigrade(-40) - (-40)) < 0.01   // Same in both scales
   }
 
-  def "convertFahrenheitToCentigradesTest - Edge Cases"() {
+  def "convertFahrenheitToCentigradeTest - Edge Cases"() {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
@@ -50,10 +50,10 @@ class TemperatureConversionTest extends Specification {
 
     expect:
     // Use precision tolerance for floating point comparisons
-    Math.abs(script.convertFahrenheitToCentigrades(0) - (-17.7777777792)) < 0.01
-    Math.abs(script.convertFahrenheitToCentigrades(-10) - (-23.333333333333332)) < 0.01
-    Math.abs(script.convertFahrenheitToCentigrades(100) - 37.77777777777778) < 0.01
-    Math.abs(script.convertFahrenheitToCentigrades(-459.67) - (-273.15)) < 0.01 // Absolute zero
+    Math.abs(script.convertFahrenheitToCentigrade(0) - (-17.7777777792)) < 0.01
+    Math.abs(script.convertFahrenheitToCentigrade(-10) - (-23.333333333333332)) < 0.01
+    Math.abs(script.convertFahrenheitToCentigrade(100) - 37.77777777777778) < 0.01
+    Math.abs(script.convertFahrenheitToCentigrade(-459.67) - (-273.15)) < 0.01 // Absolute zero
   }
 
   def "calculateHvacModeTest - Basic Cases"() {

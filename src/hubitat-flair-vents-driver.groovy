@@ -73,7 +73,7 @@ metadata {
         attribute 'room-cooling-rate', 'number'
         attribute 'room-heating-rate', 'number'
 
-        // command 'setRoomActive' // Commented out for testing compatibility
+        command 'setRoomActive', ['string']
     }
 
     preferences {

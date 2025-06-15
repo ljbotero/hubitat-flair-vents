@@ -380,7 +380,7 @@ class Test extends Specification {
     expect:
     def expectedVals = [
       -1, new Tuple(Level.debug, 'Insuficient number of minutes required to calculate change rate (0 should be greather than 1)'),
-      -1, new Tuple(Level.debug, 'Change rate (0.000) is lower than 0.001, therefore it is being excluded'),
+      -1, new Tuple(Level.debug, 'Zero/minimal temperature change detected: startTemp=0°C, currentTemp=0°C, diffTemps=0°C, vent was 4% open'),
       1.000, 0.056, -1.000, 1.429, 1.000
     ]
     def actualVals = [

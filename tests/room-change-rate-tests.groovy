@@ -110,7 +110,9 @@ class RoomChangeRateTest extends Specification {
     expect:
     // Change rate too low (below MIN_TEMP_CHANGE_RATE_C = 0.001)
     script.calculateRoomChangeRate(0, 0, 10, 4, 0.03) == -1
-    log.records[0] == new Tuple(Level.debug, 'Change rate (0.000) is lower than 0.001, therefore it is being excluded')
+    // Check for both the zero temperature change log and the low rate log
+    log.records[0] == new Tuple(Level.debug, 'Zero/minimal temperature change detected: startTemp=0°C, currentTemp=0°C, diffTemps=0°C, vent was 4% open')
+    log.records[1] == new Tuple(Level.debug, 'Change rate (0.000) is lower than 0.001, therefore it is being excluded (startTemp=0, currentTemp=0, percentOpen=4%)')
     
     // Very small temperature change resulting in low rate
     script.calculateRoomChangeRate(20.0, 20.0001, 60, 100, 0.5) == -1
