@@ -73,7 +73,7 @@ metadata {
         attribute 'room-cooling-rate', 'number'
         attribute 'room-heating-rate', 'number'
 
-        command 'setRoomActive', ['string']
+        command 'setRoomActive', [[name: 'active*', type: 'ENUM', description: 'Set room active/away', constraints: ['true', 'false']]]
     }
 
     preferences {
