@@ -1,0 +1,30 @@
+{
+  "packageName": "Flair Vents (Beta)",
+  "author": "Jaime Botero",
+  "version": "0.17-beta",
+  "dateReleased": "2025-06-15",
+  "minimumHEVersion": "0.0.1",
+  "documentationLink": "https://github.com/ljbotero/hubitat-flair-vents/blob/main/README.md",
+  "communityLink": "https://community.hubitat.com/t/new-control-flair-vents-with-hubitat-free-open-source-app-and-driver/132728",
+  "releaseNotes": "Beta Release v0.17:\n- Fixed 0% efficiency bug for rooms with minimal temperature change\n- Debug logging NONE level now properly disables all logs\n- DAB Disable Mode - Vents respond to manual control when OFF\n- No more 404 errors from missing Flair Pucks\n- New setRoomActive command with dropdown UI\n\nWARNING: This is a beta release and may contain bugs. Please report issues on the community forum.",
+  "apps": [
+    {
+      "id": "9c841359-115b-4fdd-8c0d-f054a5140c36",
+      "name": "Flair Vents",
+      "namespace": "",
+      "location": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/src/hubitat-flair-vents-app.groovy",
+      "required": true,
+      "oauth": false,
+      "primary": false
+    }
+  ],
+  "drivers": [
+    {
+      "id": "f13f6c09-59f6-4f68-9219-21b9fc9170a9",
+      "name": "Flair vents",
+      "namespace": "bot.flair",
+      "location": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/src/hubitat-flair-vents-driver.groovy",
+      "required": true
+    }
+  ]
+}
