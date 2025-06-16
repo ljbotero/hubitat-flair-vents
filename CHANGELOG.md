@@ -2,6 +2,48 @@
 
 All notable changes to the Hubitat Flair Vents integration will be documented in this file.
 
+## [0.18] - 2025-06-15
+
+### Added
+- **Full Flair Pucks Support**: Complete implementation of Flair Pucks as temperature/humidity sensors
+  - Created new device driver `hubitat-flair-vents-pucks-driver.groovy` with capabilities:
+    - Temperature measurement (with °C to °F conversion)
+    - Humidity measurement
+    - Motion detection
+    - Battery monitoring (calculated from voltage)
+    - Comprehensive room attributes (temperature, humidity, occupancy, setpoints, etc.)
+    - RSSI signal strength and firmware version tracking
+  - OAuth scope expanded to include `pucks.view+pucks.edit` permissions
+  - Multiple discovery methods: structure endpoint, all pucks endpoint, rooms with pucks
+  - Pucks can be selected as temperature sources for individual vents in the DAB algorithm
+  - Room control commands (setRoomActive) available for pucks
+  - Pucks are excluded from efficiency calculations and the device efficiency table
+
+### Changed
+- Modified `handleDeviceList()` to discover and count both vents and pucks
+- Updated `makeRealDevice()` to create appropriate device type based on discovery
+- Updated `getDeviceData()` to handle pucks with dedicated handlers:
+  - `handlePuckGet()` for puck attributes
+  - `handlePuckReadingGet()` for sensor readings
+- Modified `listDiscoveredDevices()` to exclude pucks from the efficiency table
+- Enhanced discovery with `handleAllPucks()` and `handleRoomsWithPucks()` methods
+- Improved error handling for puck API calls and battery calculations
+
+### Fixed
+- Fixed Groovy syntax errors for Hubitat compatibility (removed unsupported `?.[]` syntax)
+- Added proper null checks and error handling for battery voltage calculations
+- Resolved 403 errors by implementing proper OAuth scope and puck-specific handlers
+- Fixed device creation issues with better validation and error handling
+
+### Documentation
+- Added comprehensive `architecture.md` file documenting:
+  - Project overview and file structure
+  - High-level system architecture
+  - Low-level design details
+  - Dynamic Airflow Balancing algorithm explanation
+  - API integration details
+  - Testing framework and coverage information
+
 ## [0.17] - 2025-06-15
 
 Based on community feedback from the Hubitat forum, this release addresses critical bugs and implements requested features.
