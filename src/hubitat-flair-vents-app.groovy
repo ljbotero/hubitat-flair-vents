@@ -190,10 +190,12 @@ def mainPage() {
 def listDiscoveredDevices() {
   final String acBoosterLink = 'https://amzn.to/3QwVGbs'
   def children = getChildDevices()
+  // Filter only vents by checking for percent-open attribute which pucks don't have
+  def vents = children.findAll { it.hasAttribute('percent-open') }
   BigDecimal maxCoolEfficiency = 0
   BigDecimal maxHeatEfficiency = 0
 
-  children.each { vent ->
+  vents.each { vent ->
     def coolRate = vent.currentValue('room-cooling-rate') ?: 0
     def heatRate = vent.currentValue('room-heating-rate') ?: 0
     maxCoolEfficiency = maxCoolEfficiency.max(coolRate)
@@ -224,7 +226,7 @@ def listDiscoveredDevices() {
     <tbody>
   '''
 
-  children.each { vent ->
+  vents.each { vent ->
     def coolRate = vent.currentValue('room-cooling-rate') ?: 0
     def heatRate = vent.currentValue('room-heating-rate') ?: 0
     def coolEfficiency = maxCoolEfficiency > 0 ? roundBigDecimal((coolRate / maxCoolEfficiency) * 100, 0) : 0
@@ -474,7 +476,7 @@ def authenticate() {
   log 'Getting access_token from Flair', 2
   def uri = "${BASE_URL}/oauth2/token"
   def body = "client_id=${settings?.clientId}&client_secret=${settings?.clientSecret}" +
-    '&scope=vents.view+vents.edit+structures.view+structures.edit&grant_type=client_credentials'
+    '&scope=vents.view+vents.edit+structures.view+structures.edit+pucks.view+pucks.edit&grant_type=client_credentials'
   def params = [uri: uri, body: body, timeout: HTTP_TIMEOUT_SECS]
   try {
     httpPost(params) { response -> handleAuthResponse(response) }
@@ -520,45 +522,313 @@ private void discover() {
   log 'Discovery started', 3
   atomicState.remove('ventsByRoomId')
   def structureId = getStructureId()
-  def uri = "${BASE_URL}/api/structures/${structureId}/vents"
-  getDataAsync(uri, 'handleDeviceList')
+  // Discover vents first
+  def ventsUri = "${BASE_URL}/api/structures/${structureId}/vents"
+  log "Calling vents endpoint: ${ventsUri}", 2
+  getDataAsync(ventsUri, 'handleDeviceList', [deviceType: 'vents'])
+  // Then discover pucks separately - they might be at a different endpoint
+  def pucksUri = "${BASE_URL}/api/structures/${structureId}/pucks"
+  log "Calling pucks endpoint: ${pucksUri}", 2
+  getDataAsync(pucksUri, 'handleDeviceList', [deviceType: 'pucks'])
+  // Also try to get pucks from rooms since they might be associated there
+  def roomsUri = "${BASE_URL}/api/structures/${structureId}/rooms?include=pucks"
+  log "Calling rooms endpoint for pucks: ${roomsUri}", 2
+  getDataAsync(roomsUri, 'handleRoomsWithPucks')
+  // Try getting pucks directly without structure
+  def allPucksUri = "${BASE_URL}/api/pucks"
+  log "Calling all pucks endpoint: ${allPucksUri}", 2
+  getDataAsync(allPucksUri, 'handleAllPucks')
+}
+
+def handleStructureDevices(resp, data) {
+  if (!isValidResponse(resp)) { return }
+  def respJson = resp.getJson()
+  
+  // Check if we have included data (pucks and vents)
+  if (respJson?.included) {
+    def ventCount = 0
+    def puckCount = 0
+    
+    respJson.included.each { it ->
+      if (it.type == 'vents' || it.type == 'pucks') {
+        if (it.type == 'vents') {
+          ventCount++
+        } else if (it.type == 'pucks') {
+          puckCount++
+        }
+        def device = [
+          id   : it.id,
+          type : it.type,
+          label: it.attributes.name
+        ]
+        def dev = makeRealDevice(device)
+        if (dev && it.type == 'vents') {
+          processVentTraits(dev, [data: it])
+        }
+      }
+    }
+    
+    log "Discovered ${ventCount} vents and ${puckCount} pucks from structure include", 3
+    
+    if (ventCount == 0 && puckCount == 0) {
+      // Fall back to vents-only endpoint
+      def structureId = getStructureId()
+      def ventsUri = "${BASE_URL}/api/structures/${structureId}/vents"
+      getDataAsync(ventsUri, 'handleDeviceList')
+    }
+  } else {
+    // Fall back to vents-only endpoint
+    def structureId = getStructureId()
+    def ventsUri = "${BASE_URL}/api/structures/${structureId}/vents"
+    getDataAsync(ventsUri, 'handleDeviceList')
+  }
+}
+
+def handleAllPucks(resp, data) {
+  try {
+    log "handleAllPucks called", 2
+    if (!isValidResponse(resp)) { 
+      log "handleAllPucks: Invalid response status: ${resp?.getStatus()}", 2
+      return 
+    }
+    def respJson = resp.getJson()
+    log "All pucks endpoint response: has data=${respJson?.data != null}, count=${respJson?.data?.size() ?: 0}", 2
+    
+    if (respJson?.data) {
+      def puckCount = 0
+      respJson.data.each { puckData ->
+        try {
+          if (puckData?.id) {
+            puckCount++
+            def puckId = puckData.id?.toString()?.trim()
+            def puckName = puckData.attributes?.name?.toString()?.trim() ?: "Puck-${puckId}"
+            
+            log "Creating puck from all pucks endpoint: ${puckName} (${puckId})", 2
+            
+            def device = [
+              id   : puckId,
+              type : 'pucks',
+              label: puckName
+            ]
+            
+            def dev = makeRealDevice(device)
+            if (dev) {
+              log "Created puck device: ${puckName}", 2
+            }
+          }
+        } catch (Exception e) {
+          log "Error processing puck from all pucks: ${e.message}", 1
+        }
+      }
+      if (puckCount > 0) {
+        log "Discovered ${puckCount} pucks from all pucks endpoint", 3
+      }
+    }
+  } catch (Exception e) {
+    log "Error in handleAllPucks: ${e.message}", 1
+  }
+}
+
+def handleRoomsWithPucks(resp, data) {
+  try {
+    log "handleRoomsWithPucks called", 2
+    if (!isValidResponse(resp)) { 
+      log "handleRoomsWithPucks: Invalid response status: ${resp?.getStatus()}", 2
+      return 
+    }
+    def respJson = resp.getJson()
+    
+    // Log the structure to debug
+    log "handleRoomsWithPucks response: has included=${respJson?.included != null}, included count=${respJson?.included?.size() ?: 0}, has data=${respJson?.data != null}, data count=${respJson?.data?.size() ?: 0}", 2
+    
+    // Check if we have included pucks data
+    if (respJson?.included) {
+      def puckCount = 0
+      respJson.included.each { it ->
+        try {
+          if (it?.type == 'pucks' && it?.id) {
+            puckCount++
+            def puckId = it.id?.toString()?.trim()
+            if (!puckId || puckId.isEmpty()) {
+              log "Skipping puck with invalid ID", 2
+              return // Skip this puck
+            }
+            
+            def puckName = it.attributes?.name?.toString()?.trim()
+            // Ensure we have a valid name
+            if (!puckName || puckName.isEmpty()) {
+              puckName = "Puck-${puckId}"
+            }
+            
+            // Double-check the name is not empty after all processing
+            if (!puckName || puckName.isEmpty()) {
+              log "Skipping puck with empty name even after fallback", 2
+              return
+            }
+            
+            log "About to create puck device with id: ${puckId}, name: ${puckName}", 1
+            
+            def device = [
+              id   : puckId,
+              type : 'pucks',  // Use string literal to ensure it's not null
+              label: puckName
+            ]
+            
+            def dev = makeRealDevice(device)
+            if (dev) {
+              log "Created puck device: ${puckName}", 2
+            }
+          }
+        } catch (Exception e) {
+          log "Error processing puck in loop: ${e.message}, line: ${e.stackTrace?.find()?.lineNumber}", 1
+        }
+      }
+      if (puckCount > 0) {
+        log "Discovered ${puckCount} pucks from rooms include", 3
+      }
+    }
+  } catch (Exception e) {
+    log "Error in handleRoomsWithPucks: ${e.message} at line ${e.stackTrace?.find()?.lineNumber}", 1
+  }
+  
+  
+  // Also check if pucks are in the room data relationships
+  try {
+    if (respJson?.data) {
+      def roomPuckCount = 0
+      respJson.data.each { room ->
+        if (room.relationships?.pucks?.data) {
+          room.relationships.pucks.data.each { puck ->
+            try {
+              roomPuckCount++
+              def puckId = puck.id?.toString()?.trim()
+              if (!puckId || puckId.isEmpty()) {
+                log "Skipping puck with invalid ID in room ${room.attributes?.name}", 2
+                return
+              }
+              
+              // Create a minimal puck device from the reference
+              def puckName = "Puck-${puckId}"
+              if (room.attributes?.name) {
+                puckName = "${room.attributes.name} Puck"
+              }
+              
+              log "Creating puck device from room reference: ${puckName} (${puckId})", 2
+              
+              def device = [
+                id   : puckId,
+                type : 'pucks',
+                label: puckName
+              ]
+              
+              def dev = makeRealDevice(device)
+              if (dev) {
+                log "Created puck device from room reference: ${puckName}", 2
+              }
+            } catch (Exception e) {
+              log "Error creating puck from room reference: ${e.message}", 1
+            }
+          }
+        }
+      }
+      if (roomPuckCount > 0) {
+        log "Found ${roomPuckCount} puck references in rooms", 3
+      }
+    }
+  } catch (Exception e) {
+    log "Error checking room puck relationships: ${e.message}", 1
+  }
+}
+
+def handlePuckDetails(resp, data) {
+  if (!isValidResponse(resp)) { return }
+  def respJson = resp.getJson()
+  
+  if (respJson?.data) {
+    def puckData = respJson.data
+    def puckName = puckData.attributes?.name ?: "Puck-${puckData.id}"
+    def device = [
+      id   : puckData.id,
+      type : 'pucks',
+      label: puckName
+    ]
+    def dev = makeRealDevice(device)
+    log "Created puck device from details: ${puckName}", 2
+  }
 }
 
 def handleDeviceList(resp, data) {
-  if (!isValidResponse(resp)) { return }
+  log "handleDeviceList called for ${data?.deviceType}", 2
+  if (!isValidResponse(resp)) { 
+    // Check if this was a pucks request that returned 404
+    if (resp?.hasError() && resp.getStatus() == 404 && data?.deviceType == 'pucks') {
+      log "Pucks endpoint returned 404 - this is normal, trying other methods", 2
+    } else if (data?.deviceType == 'pucks') {
+      log "Pucks endpoint failed with error: ${resp?.getStatus()}", 2
+    }
+    return 
+  }
   def respJson = resp.getJson()
   if (!respJson?.data || respJson.data.isEmpty()) {
-    logWarn "No vents discovered. This may occur with OAuth 1.0 credentials. " +
-            "Please ensure you're using OAuth 2.0 credentials or Legacy API (OAuth 1.0) credentials."
+    if (data?.deviceType == 'pucks') {
+      log "No pucks found in structure endpoint - they may be included with rooms instead", 2
+    } else {
+      logWarn "No devices discovered. This may occur with OAuth 1.0 credentials. " +
+              "Please ensure you're using OAuth 2.0 credentials or Legacy API (OAuth 1.0) credentials."
+    }
     return
   }
   def ventCount = 0
+  def puckCount = 0
   respJson.data.each { it ->
-    if (it.type == 'vents') {
-      ventCount++
+    if (it.type == 'vents' || it.type == 'pucks') {
+      if (it.type == 'vents') {
+        ventCount++
+      } else if (it.type == 'pucks') {
+        puckCount++
+      }
       def device = [
         id   : it.id,
         type : it.type,
         label: it.attributes.name
       ]
       def dev = makeRealDevice(device)
-      if (dev) {
+      if (dev && it.type == 'vents') {
         processVentTraits(dev, [data: it])
       }
     }
   }
-  log "Discovered ${ventCount} vents", 3
-  if (ventCount == 0) {
-    logWarn "No vents found in the structure. Only pucks or other devices were discovered. " +
+  log "Discovered ${ventCount} vents and ${puckCount} pucks", 3
+  if (ventCount == 0 && puckCount == 0) {
+    logWarn "No devices found in the structure. " +
             "This typically happens with incorrect OAuth credentials."
   }
 }
 
 def makeRealDevice(Map device) {
-  def newDevice = getChildDevice(device.id)
+  // Validate inputs
+  if (!device?.id || !device?.label || !device?.type) {
+    logError "Invalid device data: ${device}"
+    return null
+  }
+  
+  def deviceId = device.id?.toString()?.trim()
+  def deviceLabel = device.label?.toString()?.trim()
+  
+  if (!deviceId || deviceId.isEmpty() || !deviceLabel || deviceLabel.isEmpty()) {
+    logError "Invalid device ID or label: id=${deviceId}, label=${deviceLabel}"
+    return null
+  }
+  
+  def newDevice = getChildDevice(deviceId)
   if (!newDevice) {
-    def deviceType = "Flair ${device.type}"
-    newDevice = addChildDevice('bot.flair', deviceType, device.id, [name: device.label, label: device.label])
+    def deviceType = device.type == 'vents' ? 'Flair vents' : 'Flair pucks'
+    try {
+      newDevice = addChildDevice('bot.flair', deviceType, deviceId, [name: deviceLabel, label: deviceLabel])
+    } catch (Exception e) {
+      logError "Failed to add child device: ${e.message}"
+      return null
+    }
   }
   return newDevice
 }
@@ -566,8 +836,19 @@ def makeRealDevice(Map device) {
 def getDeviceData(device) {
   log "Refresh device details for ${device}", 2
   def deviceId = device.getDeviceNetworkId()
-  getDataAsync("${BASE_URL}/api/vents/${deviceId}/current-reading", 'handleDeviceGet', [device: device])
-  getDataAsync("${BASE_URL}/api/vents/${deviceId}/room", 'handleRoomGet', [device: device])
+  
+  // Check if it's a puck by looking for the percent-open attribute which only vents have
+  def isPuck = !device.hasAttribute('percent-open')
+  
+  if (isPuck) {
+    // Get puck data and current reading
+    getDataAsync("${BASE_URL}/api/pucks/${deviceId}", 'handlePuckGet', [device: device])
+    getDataAsync("${BASE_URL}/api/pucks/${deviceId}/current-reading", 'handlePuckReadingGet', [device: device])
+    getDataAsync("${BASE_URL}/api/pucks/${deviceId}/room", 'handleRoomGet', [device: device])
+  } else {
+    getDataAsync("${BASE_URL}/api/vents/${deviceId}/current-reading", 'handleDeviceGet', [device: device])
+    getDataAsync("${BASE_URL}/api/vents/${deviceId}/room", 'handleRoomGet', [device: device])
+  }
 }
 
 def handleRoomGet(resp, data) {
@@ -578,6 +859,67 @@ def handleRoomGet(resp, data) {
 def handleDeviceGet(resp, data) {
   if (!isValidResponse(resp) || !data?.device) { return }
   processVentTraits(data.device, resp.getJson())
+}
+
+def handlePuckGet(resp, data) {
+  if (!isValidResponse(resp) || !data?.device) { return }
+  def respJson = resp.getJson()
+  if (respJson?.data) {
+    def puckData = respJson.data
+    // Extract puck attributes
+    if (puckData.attributes?.'current-temperature-c' != null) {
+      def tempC = puckData.attributes['current-temperature-c']
+      def tempF = (tempC * 9/5) + 32
+      sendEvent(data.device, [name: 'temperature', value: tempF, unit: '°F'])
+      log "Puck temperature: ${tempF}°F", 2
+    }
+    if (puckData.attributes?.'current-humidity' != null) {
+      sendEvent(data.device, [name: 'humidity', value: puckData.attributes['current-humidity'], unit: '%'])
+    }
+    if (puckData.attributes?.voltage != null) {
+      try {
+        def voltage = puckData.attributes.voltage as BigDecimal
+        def battery = ((voltage - 2.0) / 1.6) * 100  // Assuming 2.0V = 0%, 3.6V = 100%
+        battery = Math.max(0, Math.min(100, battery.round() as int))
+        sendEvent(data.device, [name: 'battery', value: battery, unit: '%'])
+      } catch (Exception e) {
+        log "Error calculating battery for puck: ${e.message}", 2
+      }
+    }
+    ['inactive', 'created-at', 'updated-at', 'current-rssi', 'name'].each { attr ->
+      if (puckData.attributes && puckData.attributes[attr] != null) {
+        sendEvent(data.device, [name: attr, value: puckData.attributes[attr]])
+      }
+    }
+  }
+}
+
+def handlePuckReadingGet(resp, data) {
+  if (!isValidResponse(resp) || !data?.device) { return }
+  def respJson = resp.getJson()
+  if (respJson?.data) {
+    def reading = respJson.data
+    // Process sensor reading data
+    if (reading.attributes?.'room-temperature-c' != null) {
+      def tempC = reading.attributes['room-temperature-c']
+      def tempF = (tempC * 9/5) + 32
+      sendEvent(data.device, [name: 'temperature', value: tempF, unit: '°F'])
+      log "Puck temperature from reading: ${tempF}°F", 2
+    }
+    if (reading.attributes?.humidity != null) {
+      sendEvent(data.device, [name: 'humidity', value: reading.attributes.humidity, unit: '%'])
+    }
+    if (reading.attributes?.'system-voltage' != null) {
+      try {
+        def voltage = reading.attributes['system-voltage'] as BigDecimal
+        def battery = ((voltage - 2.0) / 1.6) * 100
+        battery = Math.max(0, Math.min(100, battery.round() as int))
+        sendEvent(data.device, [name: 'battery', value: battery, unit: '%'])
+      } catch (Exception e) {
+        log "Error calculating battery from reading: ${e.message}", 2
+      }
+    }
+  }
 }
 
 def traitExtract(device, details, String propNameData, String propNameDriver = propNameData, unit = null) {
@@ -861,8 +1203,15 @@ def evaluateRebalancingVents() {
 }
 
 def finalizeRoomStates(data) {
-  if (!data.ventIdsByRoomId || !data.startedCycle || !data.startedRunning || !data.finishedRunning || !data.hvacMode) {
-    logWarn "Finalizing room states: wrong parameters (${data})"
+  // Check for required parameters
+  if (!data.ventIdsByRoomId || !data.startedCycle || !data.finishedRunning) {
+    logWarn "Finalizing room states: missing required parameters (${data})"
+    return
+  }
+  
+  // Handle edge case when HVAC was already running during code deployment
+  if (!data.startedRunning || !data.hvacMode) {
+    log "Skipping room state finalization - HVAC cycle started before code deployment", 2
     return
   }
   log 'Start - Finalizing room states', 3
@@ -882,7 +1231,7 @@ def finalizeRoomStates(data) {
         def vent = getChildDevice(ventId)
         if (!vent) {
           log "Failed getting vent Id ${ventId}", 3
-          break
+          continue  // Changed from break to continue
         }
         
         def roomName = vent.currentValue('room-name')
@@ -900,9 +1249,24 @@ def finalizeRoomStates(data) {
         def ratePropName = data.hvacMode == COOLING ? 'room-cooling-rate' : 'room-heating-rate'
         BigDecimal currentRate = vent.currentValue(ratePropName) ?: 0
         def newRate = calculateRoomChangeRate(lastStartTemp, currentTemp, totalCycleMinutes, percentOpen, currentRate)
+        
         if (newRate <= 0) {
           log "New rate for ${roomName} is ${newRate}", 3
-          break
+          // Instead of breaking, use a minimum rate if the vent was open
+          if (percentOpen > 0) {
+            // Use a very small rate to indicate the room is inefficient but not completely non-functional
+            newRate = MIN_TEMP_CHANGE_RATE
+            log "Setting minimum rate for ${roomName} - no temperature change detected with ${percentOpen}% open vent", 3
+            // Send an event to indicate this room may have HVAC issues
+            sendEvent(vent, [name: 'room-hvac-ineffective', value: true])
+          } else {
+            continue  // Skip if vent was closed
+          }
+        } else {
+          // Clear the ineffective flag if room is responding normally
+          if (vent.currentValue('room-hvac-ineffective') == 'true') {
+            sendEvent(vent, [name: 'room-hvac-ineffective', value: false])
+          }
         }
         def rate = rollingAverage(currentRate, newRate, percentOpen / 100, 4)
         sendEvent(vent, [name: ratePropName, value: rate])
@@ -1118,8 +1482,15 @@ def calculateLongestMinutesToTarget(rateAndTempPerVentId, String hvacMode, BigDe
         log "'${stateVal.name}' has already reached setpoint", 3
       } else if (stateVal.rate > 0) {
         minutesToTarget = Math.abs(setpoint - stateVal.temp) / stateVal.rate
+        // Check for unrealistic time estimates due to minimal temperature change
+        if (minutesToTarget > maxRunningTime * 2) {
+          logWarn "'${stateVal.name}' shows minimal temperature change (rate: ${roundBigDecimal(stateVal.rate)}°C/min). " +
+                  "Estimated time ${roundBigDecimal(minutesToTarget)} minutes is unrealistic."
+          minutesToTarget = maxRunningTime  // Cap at max running time
+        }
       } else if (stateVal.rate == 0) {
         minutesToTarget = 0
+        logWarn "'${stateVal.name}' shows no temperature change with vent open"
       }
       if (minutesToTarget > maxRunningTime) {
         logWarn "'${stateVal.name}' is estimated to take ${roundBigDecimal(minutesToTarget)} minutes to reach target temp, which is longer than the average ${roundBigDecimal(maxRunningTime)} minutes"
