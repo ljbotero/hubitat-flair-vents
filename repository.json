@@ -9,13 +9,6 @@
       "category": "Integrations",
       "location": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/packageManifest.json",
       "description": "Control Flair Smart Vents in Hubitat and add Dynamic Airflow Balancing"
-    },
-    {
-      "id": "8b5f3d2a-9c4e-4a67-b892-3f5e8d9c1a7b",
-      "name": "Flair Vents (Beta)",
-      "category": "Integrations",
-      "location": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/packageManifest-beta.json",
-      "description": "BETA VERSION - Control Flair Smart Vents in Hubitat and add Dynamic Airflow Balancing (Latest features, may contain bugs)"
     }
   ]
 }
