@@ -1,7 +1,8 @@
 {
   "packageName": "Flair Vents",
   "author": "Jaime Botero",
-  "version": "0.18",
+  "version": "0.16",
+  "betaVersion": "0.18",
   "dateReleased": "2025-06-15",
   "minimumHEVersion": "0.0.1",
   "documentationLink": "https://github.com/ljbotero/hubitat-flair-vents/blob/main/README.md",
@@ -12,6 +13,7 @@
       "name": "Flair Vents",
       "namespace": "",
       "location": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/src/hubitat-flair-vents-app.groovy",
+      "betaLocation": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/refs/heads/Beta/src/hubitat-flair-vents-app.groovy",
       "required": true,
       "oauth": false,
       "primary": false
@@ -23,13 +25,15 @@
       "name": "Flair vents",
       "namespace": "bot.flair",
       "location": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/src/hubitat-flair-vents-driver.groovy",
+      "betaLocation": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/refs/heads/Beta/src/hubitat-flair-vents-driver.groovy",
       "required": true
     },
     {
-      "id": "a2b3c4d5-6e7f-8g9h-0i1j-2k3l4m5n6o7p",
+      "id": "f13f6c09-59f6-4f68-9219-21b9fc9170b9",
       "name": "Flair pucks",
       "namespace": "bot.flair",
-      "location": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/src/hubitat-flair-vents-pucks-driver.groovy",
+      "location": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/refs/heads/Beta/src/hubitat-flair-vents-pucks-driver.groovy",
+      "betaLocation": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/refs/heads/Beta/src/hubitat-flair-vents-pucks-driver.groovy",
       "required": true
     }
   ]
