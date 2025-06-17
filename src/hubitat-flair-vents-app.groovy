@@ -159,7 +159,9 @@ def mainPage() {
             atomicState?.putAt('thermostat1Mode', 'manual')
           }
         }
-        for (child in getChildDevices()) {
+        // Only show vents in DAB section, not pucks
+        def vents = getChildDevices().findAll { it.hasAttribute('percent-open') }
+        for (child in vents) {
           input name: "thermostat${child.getId()}", type: 'capability.temperatureMeasurement', title: "Choose Thermostat for ${child.getLabel()} (Optional)", multiple: false, required: false
         }
       }
