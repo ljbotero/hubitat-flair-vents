@@ -26,6 +26,22 @@ import groovy.json.JsonOutput
 // Base URL for Flair API endpoints.
 @Field static final String BASE_URL = 'https://api.flair.co'
 
+// Room data cache to prevent redundant API calls
+@Field static final Map<String, Map> roomDataCache = [:]
+@Field static final Map<String, Long> roomDataCacheTimestamps = [:]
+@Field static final Long ROOM_CACHE_DURATION_MS = 60000 // 1 minute cache duration
+
+// Track pending room requests to prevent duplicate API calls
+@Field static final Map<String, Boolean> pendingRoomRequests = [:]
+
+// Device reading cache to prevent redundant API calls
+@Field static final Map<String, Map> deviceReadingCache = [:]
+@Field static final Map<String, Long> deviceReadingCacheTimestamps = [:]
+@Field static final Long DEVICE_CACHE_DURATION_MS = 30000 // 30 second cache duration for device readings
+
+// Track pending device reading requests
+@Field static final Map<String, Boolean> pendingDeviceRequests = [:]
+
 // Content-Type header for API requests.
 @Field static final String CONTENT_TYPE = 'application/json'
 
@@ -90,6 +106,12 @@ import groovy.json.JsonOutput
 
 // Delay after a thermostat state change before reinitializing (in milliseconds).
 @Field static final Integer POST_STATE_CHANGE_DELAY_MS = 1000
+
+// Simple API throttling delay to prevent overwhelming the Flair API (in milliseconds).
+@Field static final Integer API_CALL_DELAY_MS = 300
+
+// Maximum concurrent HTTP requests to prevent API overload.
+@Field static final Integer MAX_CONCURRENT_REQUESTS = 3
 
 // ------------------------------
 // End Constants
@@ -284,6 +306,10 @@ def initialize() {
     String hvacMode = calculateHvacMode(temp, coolingSetpoint, heatingSetpoint)
     runInMillis(INITIALIZATION_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
   }
+  // Schedule periodic cleanup of caches and pending requests
+  runEvery5Minutes('cleanupPendingRequests')
+  runEvery10Minutes('clearRoomCache')
+  runEvery5Minutes('clearDeviceCache')
 }
 
 // ------------------------------
@@ -391,6 +417,117 @@ private getThermostat1Mode() {
   return atomicState?.thermostat1Mode
 }
 
+// Get appropriate state object (atomicState in production, state in tests)
+private getStateObject() {
+  try {
+    // Try atomicState first (production)
+    if (atomicState != null) {
+      return atomicState
+    }
+  } catch (Exception e) {
+    // Fall back to state for test compatibility
+  }
+  return state
+}
+
+// Safe sendEvent wrapper for test compatibility
+private safeSendEvent(device, Map eventData) {
+  try {
+    sendEvent(device, eventData)
+  } catch (Exception e) {
+    // In test environment, sendEvent might not be available
+    log "Warning: Could not send event ${eventData} to device ${device}: ${e.message}", 2
+  }
+}
+
+// Initialize request tracking
+private initRequestTracking() {
+  def stateObj = getStateObject()
+  if (stateObj.activeRequests == null) {
+    stateObj.activeRequests = 0
+  }
+}
+
+// Check if we can make a request (under concurrent limit)
+private canMakeRequest() {
+  initRequestTracking()
+  def stateObj = getStateObject()
+  return (stateObj.activeRequests ?: 0) < MAX_CONCURRENT_REQUESTS
+}
+
+// Increment active request counter
+private incrementActiveRequests() {
+  initRequestTracking()
+  def stateObj = getStateObject()
+  stateObj.activeRequests = (stateObj.activeRequests ?: 0) + 1
+}
+
+// Decrement active request counter
+private decrementActiveRequests() {
+  initRequestTracking()
+  def stateObj = getStateObject()
+  stateObj.activeRequests = Math.max(0, (stateObj.activeRequests ?: 0) - 1)
+}
+
+// Retry methods for throttled requests
+def retryGetDataAsync(data) {
+  if (!data || !data.uri) {
+    logError "retryGetDataAsync called with invalid data: ${data}"
+    return
+  }
+  
+  // Check if this is a room data request that should go through cache
+  if (data.uri.contains('/room') && data.callback == 'handleRoomGetWithCache' && data.data?.deviceId) {
+    // When retry data is passed through runInMillis, device objects become serialized
+    // So we need to look up the device by ID instead
+    def deviceId = data.data.deviceId
+    def device = getChildDevice(deviceId)
+    
+    if (!device) {
+      logError "retryGetDataAsync: Could not find device with ID ${deviceId}"
+      return
+    }
+    
+    def isPuck = !device.hasAttribute('percent-open')
+    def roomId = device.currentValue('room-id')
+    
+    if (roomId) {
+      // Check cache first
+      def currentTime = now()
+      def cachedTimestamp = roomDataCacheTimestamps[roomId]
+      
+      if (cachedTimestamp && (currentTime - cachedTimestamp) < ROOM_CACHE_DURATION_MS) {
+        def cachedData = roomDataCache[roomId]
+        if (cachedData) {
+          log "Using cached room data for room ${roomId} on retry (cached ${(currentTime - cachedTimestamp) / 1000}s ago)", 3
+          processRoomTraits(device, cachedData)
+          return
+        }
+      }
+      
+      // Check if request is already pending
+      if (pendingRoomRequests[roomId]) {
+        log "Room data request already pending for room ${roomId} on retry, skipping", 3
+        return
+      }
+    }
+    
+    // Re-route through cache check
+    getRoomDataWithCache(device, deviceId, isPuck)
+  } else {
+    // Normal retry for non-room requests
+    getDataAsync(data.uri, data.callback, data.data)
+  }
+}
+
+def retryPatchDataAsync(data) {
+  if (!data || !data.uri) {
+    logError "retryPatchDataAsync called with invalid data: ${data}"
+    return
+  }
+  patchDataAsync(data.uri, data.callback, data.body, data.data)
+}
+
 // Wrapper for log.error that respects debugLevel setting
 private logError(String msg) {
   def settingsLevel = (settings?.debugLevel as Integer) ?: 0
@@ -441,27 +578,49 @@ def isValidResponse(resp) {
   return true
 }
 
-// Updated getDataAsync to accept a String callback name.
+// Updated getDataAsync to accept a String callback name with simple throttling.
 def getDataAsync(String uri, String callback, data = null) {
-  def headers = [ Authorization: "Bearer ${state.flairAccessToken}" ]
-  def httpParams = [ uri: uri, headers: headers, contentType: CONTENT_TYPE, timeout: HTTP_TIMEOUT_SECS ]
-  asynchttpGet(callback, httpParams, data)
+  if (canMakeRequest()) {
+    incrementActiveRequests()
+    def headers = [ Authorization: "Bearer ${state.flairAccessToken}" ]
+    def httpParams = [ uri: uri, headers: headers, contentType: CONTENT_TYPE, timeout: HTTP_TIMEOUT_SECS ]
+    asynchttpGet(callback, httpParams, data)
+    runInMillis(100, 'decrementActiveRequests')
+  } else {
+    log "API throttling: Delaying GET request to ${uri}", 2
+    // For room data requests, store device ID instead of device object to avoid serialization issues
+    def retryData = [uri: uri, callback: callback]
+    if (data?.device && uri.contains('/room')) {
+      retryData.data = [deviceId: data.device.getDeviceNetworkId()]
+    } else {
+      retryData.data = data
+    }
+    runInMillis(API_CALL_DELAY_MS, 'retryGetDataAsync', [data: retryData])
+  }
 }
 
-// Updated patchDataAsync to accept a String callback name.
+// Updated patchDataAsync to accept a String callback name with simple throttling.
 // If callback is null, we use a no-op callback.
 def patchDataAsync(String uri, String callback, body, data = null) {
   if (!callback) { callback = 'noOpHandler' }
-  def headers = [ Authorization: "Bearer ${state.flairAccessToken}" ]
-  def httpParams = [
-     uri: uri,
-     headers: headers,
-     contentType: CONTENT_TYPE,
-     requestContentType: CONTENT_TYPE,
-     timeout: HTTP_TIMEOUT_SECS,
-     body: JsonOutput.toJson(body)
-  ]
-  asynchttpPatch(callback, httpParams, data)
+  if (canMakeRequest()) {
+    incrementActiveRequests()
+    def headers = [ Authorization: "Bearer ${state.flairAccessToken}" ]
+    def httpParams = [
+       uri: uri,
+       headers: headers,
+       contentType: CONTENT_TYPE,
+       requestContentType: CONTENT_TYPE,
+       timeout: HTTP_TIMEOUT_SECS,
+       body: JsonOutput.toJson(body)
+    ]
+    asynchttpPatch(callback, httpParams, data)
+    runInMillis(100, 'decrementActiveRequests')
+  } else {
+    log "API throttling: Delaying PATCH request to ${uri}", 2
+    def retryData = [uri: uri, callback: callback, body: body, data: data]
+    runInMillis(API_CALL_DELAY_MS, 'retryPatchDataAsync', [data: retryData])
+  }
   logDetails("patchDataAsync: ${uri}", "body: ${body}", 2)
 }
 
@@ -838,19 +997,137 @@ def makeRealDevice(Map device) {
 def getDeviceData(device) {
   log "Refresh device details for ${device}", 2
   def deviceId = device.getDeviceNetworkId()
+  def roomId = device.currentValue('room-id')
+  
+  // Log cache status for this device
+  if (roomId) {
+    def cachedTimestamp = roomDataCacheTimestamps[roomId]
+    def isPending = pendingRoomRequests[roomId]
+    if (cachedTimestamp) {
+      def age = (now() - cachedTimestamp) / 1000
+      log "Room ${roomId} cache status: age=${age}s, pending=${isPending}", 2
+    } else {
+      log "Room ${roomId} cache status: no cache, pending=${isPending}", 2
+    }
+  }
   
   // Check if it's a puck by looking for the percent-open attribute which only vents have
   def isPuck = !device.hasAttribute('percent-open')
   
   if (isPuck) {
-    // Get puck data and current reading
-    getDataAsync("${BASE_URL}/api/pucks/${deviceId}", 'handlePuckGet', [device: device])
-    getDataAsync("${BASE_URL}/api/pucks/${deviceId}/current-reading", 'handlePuckReadingGet', [device: device])
-    getDataAsync("${BASE_URL}/api/pucks/${deviceId}/room", 'handleRoomGet', [device: device])
+    // Get puck data and current reading with caching
+    getDeviceDataWithCache(device, deviceId, 'pucks', 'handlePuckGet')
+    getDeviceReadingWithCache(device, deviceId, 'pucks', 'handlePuckReadingGet')
+    // Check cache before making room API call
+    getRoomDataWithCache(device, deviceId, isPuck)
   } else {
-    getDataAsync("${BASE_URL}/api/vents/${deviceId}/current-reading", 'handleDeviceGet', [device: device])
-    getDataAsync("${BASE_URL}/api/vents/${deviceId}/room", 'handleRoomGet', [device: device])
+    // Get vent reading with caching
+    getDeviceReadingWithCache(device, deviceId, 'vents', 'handleDeviceGet')
+    // Check cache before making room API call
+    getRoomDataWithCache(device, deviceId, isPuck)
   }
+}
+
+// New function to handle room data with caching
+def getRoomDataWithCache(device, deviceId, isPuck) {
+  def roomId = device.currentValue('room-id')
+  
+  if (roomId) {
+    def currentTime = now()
+    def cachedTimestamp = roomDataCacheTimestamps[roomId]
+    
+    // Check if we have valid cached data
+    if (cachedTimestamp && (currentTime - cachedTimestamp) < ROOM_CACHE_DURATION_MS) {
+      def cachedData = roomDataCache[roomId]
+      if (cachedData) {
+        log "Using cached room data for room ${roomId} (cached ${(currentTime - cachedTimestamp) / 1000}s ago)", 3
+        // Process the cached room data
+        processRoomTraits(device, cachedData)
+        return
+      }
+    }
+    
+    // Check if a request is already pending for this room
+    if (pendingRoomRequests[roomId]) {
+      log "Room data request already pending for room ${roomId}, skipping duplicate request", 3
+      return
+    }
+    
+    // Mark this room as having a pending request
+    pendingRoomRequests[roomId] = true
+  }
+  
+  // No valid cache and no pending request, make the API call
+  def endpoint = isPuck ? "pucks" : "vents"
+  getDataAsync("${BASE_URL}/api/${endpoint}/${deviceId}/room", 'handleRoomGetWithCache', [device: device])
+}
+
+// New function to handle device data with caching (for pucks)
+def getDeviceDataWithCache(device, deviceId, deviceType, callback) {
+  def cacheKey = "${deviceType}_${deviceId}"
+  def currentTime = now()
+  def cachedTimestamp = deviceReadingCacheTimestamps[cacheKey]
+  
+  // Check if we have valid cached data
+  if (cachedTimestamp && (currentTime - cachedTimestamp) < DEVICE_CACHE_DURATION_MS) {
+    def cachedData = deviceReadingCache[cacheKey]
+    if (cachedData) {
+      log "Using cached ${deviceType} data for device ${deviceId} (cached ${(currentTime - cachedTimestamp) / 1000}s ago)", 3
+      // Process the cached data
+      if (callback == 'handlePuckGet') {
+        handlePuckGet([getJson: { cachedData }], [device: device])
+      }
+      return
+    }
+  }
+  
+  // Check if a request is already pending
+  if (pendingDeviceRequests[cacheKey]) {
+    log "${deviceType} data request already pending for device ${deviceId}, skipping duplicate request", 3
+    return
+  }
+  
+  // Mark this device as having a pending request
+  pendingDeviceRequests[cacheKey] = true
+  
+  // No valid cache and no pending request, make the API call
+  def uri = "${BASE_URL}/api/${deviceType}/${deviceId}"
+  getDataAsync(uri, callback + 'WithCache', [device: device, cacheKey: cacheKey])
+}
+
+// New function to handle device reading with caching
+def getDeviceReadingWithCache(device, deviceId, deviceType, callback) {
+  def cacheKey = "${deviceType}_reading_${deviceId}"
+  def currentTime = now()
+  def cachedTimestamp = deviceReadingCacheTimestamps[cacheKey]
+  
+  // Check if we have valid cached data
+  if (cachedTimestamp && (currentTime - cachedTimestamp) < DEVICE_CACHE_DURATION_MS) {
+    def cachedData = deviceReadingCache[cacheKey]
+    if (cachedData) {
+      log "Using cached ${deviceType} reading for device ${deviceId} (cached ${(currentTime - cachedTimestamp) / 1000}s ago)", 3
+      // Process the cached data
+      if (callback == 'handlePuckReadingGet') {
+        handlePuckReadingGet([getJson: { cachedData }], [device: device])
+      } else if (callback == 'handleDeviceGet') {
+        handleDeviceGet([getJson: { cachedData }], [device: device])
+      }
+      return
+    }
+  }
+  
+  // Check if a request is already pending
+  if (pendingDeviceRequests[cacheKey]) {
+    log "${deviceType} reading request already pending for device ${deviceId}, skipping duplicate request", 3
+    return
+  }
+  
+  // Mark this device as having a pending request
+  pendingDeviceRequests[cacheKey] = true
+  
+  // No valid cache and no pending request, make the API call
+  def uri = deviceType == 'pucks' ? "${BASE_URL}/api/pucks/${deviceId}/current-reading" : "${BASE_URL}/api/vents/${deviceId}/current-reading"
+  getDataAsync(uri, callback + 'WithCache', [device: device, cacheKey: cacheKey])
 }
 
 def handleRoomGet(resp, data) {
@@ -858,9 +1135,130 @@ def handleRoomGet(resp, data) {
   processRoomTraits(data.device, resp.getJson())
 }
 
+// Modified handleRoomGet to include caching
+def handleRoomGetWithCache(resp, data) {
+  def roomData = null
+  def roomId = null
+  
+  try {
+    if (isValidResponse(resp) && data?.device) {
+      roomData = resp.getJson()
+      roomId = roomData?.data?.id
+      
+      if (roomId) {
+        // Cache the room data
+        roomDataCache[roomId] = roomData
+        roomDataCacheTimestamps[roomId] = now()
+        log "Cached room data for room ${roomId}", 3
+      }
+      
+      processRoomTraits(data.device, roomData)
+    }
+  } finally {
+    // Always clear the pending flag, even if the request failed
+    if (roomId) {
+      pendingRoomRequests[roomId] = false
+    } else if (data?.device) {
+      // Try to get roomId from device if response failed
+      def deviceRoomId = data.device.currentValue('room-id')
+      if (deviceRoomId) {
+        pendingRoomRequests[deviceRoomId] = false
+      }
+    }
+  }
+}
+
+// Add a method to clear the cache periodically (optional)
+def clearRoomCache() {
+  def currentTime = now()
+  def expiredRooms = []
+  
+  roomDataCacheTimestamps.each { roomId, timestamp ->
+    if ((currentTime - timestamp) > ROOM_CACHE_DURATION_MS) {
+      expiredRooms << roomId
+    }
+  }
+  
+  expiredRooms.each { roomId ->
+    roomDataCache.remove(roomId)
+    roomDataCacheTimestamps.remove(roomId)
+    log "Cleared expired cache for room ${roomId}", 4
+  }
+}
+
+// Clear device cache periodically
+def clearDeviceCache() {
+  def currentTime = now()
+  def expiredDevices = []
+  
+  deviceReadingCacheTimestamps.each { deviceKey, timestamp ->
+    if ((currentTime - timestamp) > DEVICE_CACHE_DURATION_MS) {
+      expiredDevices << deviceKey
+    }
+  }
+  
+  expiredDevices.each { deviceKey ->
+    deviceReadingCache.remove(deviceKey)
+    deviceReadingCacheTimestamps.remove(deviceKey)
+    log "Cleared expired cache for device ${deviceKey}", 4
+  }
+}
+
+// Periodic cleanup of pending request flags
+def cleanupPendingRequests() {
+  def clearedRooms = []
+  pendingRoomRequests.each { roomId, isPending ->
+    if (isPending) {
+      // Clear any pending flags that have been stuck for too long
+      pendingRoomRequests[roomId] = false
+      clearedRooms << roomId
+    }
+  }
+  if (clearedRooms.size() > 0) {
+    log "Cleared ${clearedRooms.size()} stuck pending request flags for rooms: ${clearedRooms.join(', ')}", 2
+  }
+  
+  def clearedDevices = []
+  pendingDeviceRequests.each { deviceKey, isPending ->
+    if (isPending) {
+      pendingDeviceRequests[deviceKey] = false
+      clearedDevices << deviceKey
+    }
+  }
+  if (clearedDevices.size() > 0) {
+    log "Cleared ${clearedDevices.size()} stuck pending request flags for devices: ${clearedDevices.join(', ')}", 2
+  }
+}
+
 def handleDeviceGet(resp, data) {
   if (!isValidResponse(resp) || !data?.device) { return }
   processVentTraits(data.device, resp.getJson())
+}
+
+// Modified handleDeviceGet to include caching
+def handleDeviceGetWithCache(resp, data) {
+  def deviceData = null
+  def cacheKey = data?.cacheKey
+  
+  try {
+    if (isValidResponse(resp) && data?.device) {
+      deviceData = resp.getJson()
+      
+      if (cacheKey && deviceData) {
+        // Cache the device data
+        deviceReadingCache[cacheKey] = deviceData
+        deviceReadingCacheTimestamps[cacheKey] = now()
+        log "Cached device reading for ${cacheKey}", 3
+      }
+      
+      processVentTraits(data.device, deviceData)
+    }
+  } finally {
+    // Always clear the pending flag
+    if (cacheKey) {
+      pendingDeviceRequests[cacheKey] = false
+    }
+  }
 }
 
 def handlePuckGet(resp, data) {
@@ -896,6 +1294,33 @@ def handlePuckGet(resp, data) {
   }
 }
 
+// Modified handlePuckGet to include caching
+def handlePuckGetWithCache(resp, data) {
+  def deviceData = null
+  def cacheKey = data?.cacheKey
+  
+  try {
+    if (isValidResponse(resp) && data?.device) {
+      deviceData = resp.getJson()
+      
+      if (cacheKey && deviceData) {
+        // Cache the device data
+        deviceReadingCache[cacheKey] = deviceData
+        deviceReadingCacheTimestamps[cacheKey] = now()
+        log "Cached puck data for ${cacheKey}", 3
+      }
+      
+      // Process using existing logic
+      handlePuckGet([getJson: { deviceData }], data)
+    }
+  } finally {
+    // Always clear the pending flag
+    if (cacheKey) {
+      pendingDeviceRequests[cacheKey] = false
+    }
+  }
+}
+
 def handlePuckReadingGet(resp, data) {
   if (!isValidResponse(resp) || !data?.device) { return }
   def respJson = resp.getJson()
@@ -920,6 +1345,33 @@ def handlePuckReadingGet(resp, data) {
       } catch (Exception e) {
         log "Error calculating battery from reading: ${e.message}", 2
       }
+    }
+  }
+}
+
+// Modified handlePuckReadingGet to include caching
+def handlePuckReadingGetWithCache(resp, data) {
+  def deviceData = null
+  def cacheKey = data?.cacheKey
+  
+  try {
+    if (isValidResponse(resp) && data?.device) {
+      deviceData = resp.getJson()
+      
+      if (cacheKey && deviceData) {
+        // Cache the device data
+        deviceReadingCache[cacheKey] = deviceData
+        deviceReadingCacheTimestamps[cacheKey] = now()
+        log "Cached puck reading for ${cacheKey}", 3
+      }
+      
+      // Process using existing logic
+      handlePuckReadingGet([getJson: { deviceData }], data)
+    }
+  } finally {
+    // Always clear the pending flag
+    if (cacheKey) {
+      pendingDeviceRequests[cacheKey] = false
     }
   }
 }
@@ -1070,8 +1522,8 @@ def patchVent(device, int percentOpen) {
   def body = [ data: [ type: 'vents', attributes: [ 'percent-open': pOpen ] ] ]
   patchDataAsync(uri, 'handleVentPatch', body, [device: device])
   try {
-    sendEvent(device, [name: 'percent-open', value: pOpen])
-    sendEvent(device, [name: 'level', value: pOpen])
+    safeSendEvent(device, [name: 'percent-open', value: pOpen])
+    safeSendEvent(device, [name: 'level', value: pOpen])
   } catch (Exception e) {
     log "Warning: Could not send device events: ${e.message}", 2
   }

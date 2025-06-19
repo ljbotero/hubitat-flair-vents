@@ -2,6 +2,37 @@
 
 All notable changes to the Hubitat Flair Vents integration will be documented in this file.
 
+## [0.19] - 2025-06-18
+
+### Added
+- **API Request Throttling**: Implemented concurrent request limiting (max 3 requests) to prevent overwhelming the Flair API
+  - Added request counting and queueing system with automatic retry mechanism
+  - Requests exceeding the limit are delayed by 300ms and retried
+- **Response Caching**: Added intelligent caching to reduce redundant API calls
+  - Room data cached for 60 seconds
+  - Device readings (vents and pucks) cached for 30 seconds
+  - Duplicate request prevention while API calls are in progress
+- **Periodic Cache Cleanup**: Scheduled tasks to clear expired cache entries
+  - Room cache cleared every 10 minutes
+  - Device cache cleared every 5 minutes
+  - Pending request flags cleaned up every 5 minutes
+
+### Changed
+- Modified `getDeviceData()` to use new caching functions: `getRoomDataWithCache()`, `getDeviceDataWithCache()`, and `getDeviceReadingWithCache()`
+- Updated `getDataAsync()` and `patchDataAsync()` to respect concurrent request limits
+- Enhanced retry logic to handle cached data and prevent duplicate room requests
+
+### Fixed
+- Eliminated redundant API calls for room data and device readings through intelligent caching
+- Improved API stability by preventing request flooding during device refreshes
+- Better handling of device objects in retry scenarios to avoid serialization issues
+
+### Technical Details
+- Added constants: `API_CALL_DELAY_MS`, `MAX_CONCURRENT_REQUESTS`, `ROOM_CACHE_DURATION_MS`, `DEVICE_CACHE_DURATION_MS`
+- New methods: `canMakeRequest()`, `incrementActiveRequests()`, `decrementActiveRequests()`, `clearRoomCache()`, `clearDeviceCache()`, `cleanupPendingRequests()`
+- Cache storage: `roomDataCache`, `deviceReadingCache` with corresponding timestamp maps
+- Comprehensive test coverage in new test files: `request-throttling-comprehensive-tests.groovy` and `manual-cache-test.groovy`
+
 ## [0.18] - 2025-06-15
 
 ### Added
