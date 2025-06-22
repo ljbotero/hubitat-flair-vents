@@ -1,344 +1,243 @@
-# Hubitat-Flair Vents Integration
+# Hubitat-Flair Vents Integration Architecture
 
-## Project Overview
+**Version 0.2**
 
-This project is a Hubitat home automation integration for Flair Smart Vents that provides intelligent HVAC airflow management through cloud API integration. The integration enables remote control of Flair vents and implements an advanced "Dynamic Airflow Balancing" (DAB) algorithm that automatically optimizes vent positions based on real-time temperature data and learned room efficiency patterns.
+## Overview
 
-## Project File Structure
+A Hubitat integration for Flair Smart Vents that implements Dynamic Airflow Balancing (DAB) - an algorithm that learns room heating/cooling efficiency and automatically optimizes vent positions to reduce HVAC runtime.
 
-### Root Directory Files
-
-- **`README.md`** - Project documentation and setup instructions for end users
-- **`LICENSE`** - Apache License 2.0 legal terms
-- **`packageManifest.json`** - Hubitat Package Manager metadata (version 0.16, author info, installation URLs)
-- **`repository.json`** - Repository metadata for Hubitat package management
-- **`build.gradle`** - Gradle build configuration for development and testing
-- **`.groovylintrc.json`** - Groovy linting rules and code style configuration
-- **`hubitat-flair-vents-device.png`** - Screenshot/image of Flair vent device in Hubitat interface
-
-### Source Code (`src/` directory)
-
-- **`hubitat-flair-vents-app.groovy`** - Main application file containing:
-  - OAuth 2.0 authentication with Flair API
-  - Device discovery and management
-  - Dynamic Airflow Balancing algorithm implementation
-  - Thermostat integration and HVAC cycle monitoring
-  - API communication handlers and data processing
-
-- **`hubitat-flair-vents-driver.groovy`** - Device driver file containing:
-  - Individual vent device capabilities (SwitchLevel, Refresh, VoltageMeasurement)
-  - Device attribute definitions (temperature, pressure, battery, room data)
-  - Custom commands (setRoomActive)
-  - Device lifecycle management (installed, updated, refresh)
-
-- **`hubitat-ecobee-smart-participation.groovy`** - Separate integration for Ecobee thermostat smart participation features
-
-### Test Suite (`tests/` directory)
-
-- **`hubitat-flair-vents-app-tests.groovy`** - Unit tests for the main application logic
-- **`hubitat-ecobee-smart-participation-tests.groovy`** - Unit tests for Ecobee integration
-
-### File Relationships
-
-1. **Package Manifest** (`packageManifest.json`) defines the installation package with references to:
-   - Main app: `hubitat-flair-vents-app.groovy`
-   - Device driver: `hubitat-flair-vents-driver.groovy`
-
-2. **Parent-Child Architecture**:
-   - App (`hubitat-flair-vents-app.groovy`) acts as parent managing multiple child devices
-   - Driver (`hubitat-flair-vents-driver.groovy`) handles individual vent device instances
-   - Communication flows: App ↔ Flair API ↔ Driver instances
-
-3. **Development Infrastructure**:
-   - Gradle build system for dependency management and testing
-   - Groovy lint configuration for code quality
-   - Comprehensive test suite for reliability
-
-## High-Level Architecture
+## Architecture
 
 ### System Components
-
-1. **Hubitat Hub** - Local home automation controller running the integration
-2. **Flair Cloud API** - RESTful API service at `https://api.flair.co` 
-3. **Flair Smart Vents** - Physical motorized vents controlled via API
-4. **Thermostat Integration** - Works with any Hubitat-compatible thermostat for temperature monitoring
-
-### Integration Architecture
 
 ```
 ┌─────────────┐      OAuth 2.0      ┌──────────────┐
 │ Hubitat Hub │◄────────────────────►│ Flair Cloud  │
 │             │                      │     API      │
-│  ┌─────────┐│      REST API       │              │
+│  ┌─────────┐│   Async REST API    │              │
 │  │   App   ││◄────────────────────►│              │
-│  └────┬────┘│                      └──────┬───────┘
+│  └────┬────┘│   (Throttled)       └──────┬───────┘
 │       │     │                             │
-│  ┌────▼────┐│                             │
-│  │ Driver  ││                             │
-│  └─────────┘│                      ┌──────▼───────┐
-└─────────────┘                      │ Flair Vents  │
-                                     └──────────────┘
+│  ┌────▼────┐│                      ┌──────▼───────┐
+│  │ Drivers ││                      │ Flair Devices│
+│  └─────────┘│                      │ (Vents/Pucks)│
+└─────────────┘                      └──────────────┘
 ```
 
-## Low-Level Design
+### Core Files
 
-### Authentication Flow
+- **`hubitat-flair-vents-app.groovy`** - Parent app handling OAuth, device discovery, DAB algorithm, and API communication
+- **`hubitat-flair-vents-driver.groovy`** - Vent driver (SwitchLevel capability)
+- **`hubitat-flair-vents-pucks-driver.groovy`** - Puck driver (Temperature/Humidity/Motion sensors)
 
-The integration uses OAuth 2.0 client credentials flow:
-1. User obtains Client ID and Client Secret from Flair
-2. App exchanges credentials for access token at `/oauth2/token`
-3. Token is stored in `state.flairAccessToken` 
-4. All API calls include `Authorization: Bearer [token]` header
-5. Token refresh scheduled hourly via `runEvery1Hour`
+## Core Features
 
-### Core Components
+### API Integration
+- OAuth 2.0 authentication with automatic token refresh
+- Automatic authentication on startup and token expiration (401/403 errors)
+- Asynchronous REST API communication
+- Request throttling and queueing system
+- Response caching for performance optimization
+- Graceful error handling and retry logic
 
-#### 1. Parent App (`hubitat-flair-vents-app.groovy`)
+### Dynamic Airflow Balancing (DAB)
+- Machine learning algorithm that tracks room efficiency
+- Exponential model for optimal vent positioning
+- Safety constraints to protect HVAC system (minimum 30% airflow)
+- Pre-adjustment based on temperature trends
+- Support for mixed smart and conventional vent systems
 
-**Key Responsibilities:**
-- OAuth authentication and token management
-- Device discovery and creation
-- Dynamic Airflow Balancing algorithm implementation
-- API communication with Flair cloud
-- Thermostat integration and HVAC state monitoring
+### Device Management
+- Parent-child architecture for scalability
+- Support for Flair Vents (motorized dampers)
+- Support for Flair Pucks (temperature/humidity sensors)
+- Real-time device status updates
+- Configurable polling intervals
 
-**Main Classes/Methods:**
-- `autheticate()` - OAuth token exchange
-- `discover()` - Discovers vents via `/api/structures/{id}/vents`
-- `initializeRoomStates()` - DAB algorithm initialization
-- `finalizeRoomStates()` - Temperature change rate calculation
-- `patchVent()` - Updates vent position via API
-- `thermostat1ChangeStateHandler()` - HVAC cycle detection
+## Development Best Practices
 
-#### 2. Device Driver (`hubitat-flair-vents-driver.groovy`)
+### 1. Test-Driven Development (TDD)
+**MANDATORY for all new features:**
+- Write tests FIRST before implementation
+- Follow red-green-refactor cycle
+- Maintain minimum 80% code coverage
+- Run tests with: `gradle clean test`
 
-**Capabilities:**
-- `SwitchLevel` - Controls vent opening percentage (0-100%)
-- `Refresh` - Updates device status from cloud
-- `VoltageMeasurement` - Battery voltage monitoring
-
-**Custom Commands:**
-- `setRoomActive(true/false)` - Enable/disable room for DAB algorithm
-
-**Key Attributes:**
-- Physical: `percent-open`, `duct-temperature-c`, `duct-pressure`, `motor-run-time`
-- Room: `room-current-temperature-c`, `room-active`, `room-occupied`
-- Efficiency: `room-cooling-rate`, `room-heating-rate`
-
-### Dynamic Airflow Balancing Algorithm
-
-The DAB algorithm is the core innovation that optimizes HVAC efficiency:
-
-#### 1. Temperature Change Rate Learning
-
+### 2. State Management
 ```groovy
-// Calculate rate of temperature change per room
+// ALWAYS use atomicState for concurrent data
+atomicState.sharedData = [...]
+
+// Use state only for single-thread data
+state.localData = [...]
+
+// NEVER store device objects
+atomicState.deviceIds = ['id1', 'id2']  // Correct
+state.devices = [device1, device2]      // Wrong - memory leak
+```
+
+### 3. Asynchronous Programming
+- ALWAYS use async HTTP methods: `asynchttpGet()`, `asynchttpPatch()`
+- NEVER use blocking calls: `httpGet()`, `httpPost()`
+- Implement proper callbacks for all async operations
+- Handle timeouts gracefully (5 second limit)
+
+### 4. Error Handling
+```groovy
+// Validate all external data
+if (!isValidResponse(resp)) { return }
+
+// Check device existence
+def device = getChildDevice(id)
+if (!device) {
+    logError "Device not found: ${id}"
+    return
+}
+
+// Use safe navigation
+def value = device?.currentValue('temperature') ?: 0
+```
+
+### 5. Performance Optimization
+- Maximum 20 seconds execution time per method
+- Break long operations into smaller chunks
+- Use `runInMillis()` for delayed execution
+- Implement caching for expensive operations
+- Minimize state storage size
+
+### 6. Code Organization
+- Single Responsibility Principle - one method, one purpose
+- Maximum 50 lines per method
+- Descriptive naming: `calculateVentOpenPercentage()` not `calc()`
+- Group related constants together
+- Use type hints where possible
+
+### 7. Logging Best Practices
+```groovy
+// Implement debug levels
+private log(String msg, int level = 3) {
+    if (settings?.debugLevel >= level) {
+        log.debug msg
+    }
+}
+
+// Disable verbose logging in production
+// Use appropriate levels: 1=verbose, 2=info, 3=warn, 4=error
+```
+
+### 8. Parent-Child Communication
+```groovy
+// Child calling parent methods
+parent.getDeviceData(device)
+parent.patchVent(device, percentOpen)
+
+// Parent updating child
+sendEvent(device, [name: 'temperature', value: 75.5, unit: '°F'])
+
+// Always verify parent exists
+if (parent) { parent.someMethod() }
+```
+
+### 9. Memory Management
+- Clear state in `uninstalled()` method
+- Remove scheduled jobs and subscriptions
+- Don't store large objects or arrays
+- Use device IDs instead of device references
+- Implement periodic cleanup for caches
+- Avoid concurrent modification by collecting keys before modifying maps
+
+### 10. Security Considerations
+- Store OAuth tokens in `state`, not settings
+- OAuth Client Secret displayed as password field (dots/asterisks)
+- Never log sensitive data (tokens, passwords)
+- Validate all user inputs
+- Sanitize data before API calls
+- Use HTTPS for all external communications
+- Automatic re-authentication on 401/403 errors
+
+### 11. Testing Requirements
+```groovy
+// Test structure using Spock
+def "should handle null input gracefully"() {
+    given: "null parameters"
+    def input = null
+    
+    when: "method is called"
+    def result = someMethod(input)
+    
+    then: "returns safe default"
+    result == 0
+}
+```
+
+Test categories:
+- Unit tests for all calculations
+- Integration tests for API communication
+- Edge case tests (null, zero, negative, extreme values)
+- Concurrency tests for state management
+- Performance tests for long-running operations
+
+### 12. Documentation Standards
+- Document all public methods with purpose and parameters
+- Include usage examples for complex methods
+- Maintain up-to-date README
+- Document all constants with units
+- Keep architecture documentation current
+
+### 13. Code Review Checklist
+Before submitting PR, ensure:
+- [ ] All tests pass
+- [ ] Code coverage ≥ 80%
+- [ ] No blocking HTTP calls
+- [ ] Proper error handling
+- [ ] Logging uses debug levels
+- [ ] Methods < 50 lines
+- [ ] State management uses atomicState correctly
+- [ ] Memory cleanup in uninstalled()
+- [ ] Documentation updated
+
+## API Endpoints
+
+```
+GET  /api/structures              # Get homes
+GET  /api/structures/{id}/vents   # Discover vents
+GET  /api/structures/{id}/pucks   # Discover pucks
+GET  /api/vents/{id}/current-reading
+GET  /api/vents/{id}/room
+PATCH /api/vents/{id}             # Update vent position
+PATCH /api/rooms/{id}             # Update room active status
+```
+
+## Key Algorithms
+
+### Temperature Change Rate Learning
+```groovy
 rate = Math.abs(endTemp - startTemp) / runTimeMinutes
-// Adjust for partial vent opening
-approxEquivMaxRate = (rate / maxRate) / (percentOpen / 100)
-// Rolling average over 4 cycles
-newRate = rollingAverage(currentRate, approxEquivMaxRate, weight, 4)
+adjustedRate = (rate / maxRate) / (percentOpen / 100)
 ```
 
-#### 2. Predictive Vent Positioning
-
-When HVAC starts, the algorithm:
-1. Calculates time to reach setpoint for each room based on learned rates
-2. Finds the room that will take longest (`longestTimeToGetToTarget`)
-3. Calculates optimal vent opening percentage using exponential formula:
-
+### Vent Position Optimization
 ```groovy
-percentageOpen = BASE_CONST * Math.exp((targetRate / maxRate) * EXP_CONST)
-// Where: BASE_CONST = 0.0991, EXP_CONST = 2.3
+percentOpen = 0.0991 * Math.exp((targetRate / maxRate) * 2.3)
 ```
 
-#### 3. Minimum Airflow Protection
-
-Ensures combined airflow doesn't drop below 30% to prevent HVAC damage:
-- Accounts for both smart and conventional vents
-- Assumes conventional vents at 50% open
-- Proportionally increases vent openings if below threshold
-
-#### 4. Pre-Adjustment Logic
-
-Detects when thermostat is about to start HVAC cycle:
-- Monitors temperature approaching setpoint (within 0.2°C)
-- Pre-positions vents before HVAC starts for efficiency
-
-### API Integration Details
-
-**Base URL:** `https://api.flair.co`
-
-**Key Endpoints:**
-- `GET /api/structures` - Get user's homes
-- `GET /api/structures/{id}/vents` - Discover vents
-- `GET /api/vents/{id}/current-reading` - Get vent status
-- `GET /api/vents/{id}/room` - Get room details
-- `PATCH /api/vents/{id}` - Update vent position
-- `PATCH /api/rooms/{id}` - Update room active status
-
-**Data Models:**
-- Vent attributes: `percent-open`, `duct-temperature-c`, `firmware-version-s`
-- Room attributes: `current-temperature-c`, `active`, `occupied`
-- Structure attributes: `mode` (manual/auto)
-
-### Performance Optimizations
-
-1. **Asynchronous HTTP Calls** - Uses `asynchttpGet/Patch` for non-blocking operations
-2. **Efficient Polling** - Configurable refresh interval (default 3 minutes)
-3. **State Caching** - Minimizes API calls by tracking state locally
-4. **Batch Operations** - Groups vent updates when possible
-
-## Configuration & Setup
-
-### Prerequisites
-
-1. Hubitat Elevation hub (any version)
-2. Flair Smart Vents installed and configured
-3. Flair API credentials (obtained via [request form](https://forms.gle/VohiQjWNv9CAP2ASA))
-4. Compatible thermostat integrated with Hubitat
-
-### Installation Steps
-
-1. Install driver code in Hubitat → Drivers Code
-2. Install app code in Hubitat → Apps Code
-3. Add app instance and configure OAuth credentials
-4. Discover vents (creates child devices automatically)
-5. Configure DAB settings:
-   - Select primary thermostat
-   - Set conventional vent count
-   - Enable/disable inactive room closing
-
-## Key Algorithms & Mathematical Models
-
-### Temperature Change Rate Calculation
-
-The system learns how efficiently each room heats/cools:
-
-```
-EffectiveRate = ΔTemperature / (Time × VentOpenPercentage)
+### Minimum Airflow Protection
+```groovy
+combinedFlow = Σ(SmartVentOpen%) + (ConventionalVents × 50%)
+if (combinedFlow < 30%) { adjustVentsProportionally() }
 ```
 
-Constraints:
-- MIN_TEMP_CHANGE_RATE_C = 0.001°C/min
-- MAX_TEMP_CHANGE_RATE_C = 1.5°C/min
-- MIN_MINUTES_TO_SETPOINT = 1 minute (for valid calculations)
+## Common Pitfalls to Avoid
 
-### Exponential Vent Opening Model
-
-Based on empirical testing, vent opening follows exponential relationship:
-
-```
-OpenPercentage = 0.0991 × e^(2.3 × TargetRate/MaxRate)
-```
-
-This provides:
-- Rapid opening for rooms far from setpoint
-- Gradual throttling as rooms approach target
-- Smooth transitions preventing oscillation
-
-### Combined Airflow Calculation
-
-```
-CombinedFlow = Σ(SmartVentOpen%) + (ConventionalVents × 50%)
-MinimumFlow = TotalVents × 30%
-```
-
-## Testing & Development
-
-### Running Unit Tests
-
-**Quick Commands:**
-```bash
-# Run all tests
-gradle test
-
-# Clean build with coverage
-gradle clean test jacocoTestReport
-
-# View results
-open build/reports/tests/test/index.html
-open build/reports/jacoco/test/html/index.html
-```
-
-### Test Suite Organization
-
-**Specialized Test Files:**
-- `math-calculations-tests.groovy` - Mathematical utility functions
-- `temperature-conversion-tests.groovy` - Temperature conversion and validation
-- `room-setpoint-tests.groovy` - Room temperature and setpoint logic
-- `time-calculations-tests.groovy` - Time-based calculations and predictions
-- `vent-opening-calculations-tests.groovy` - Core DAB algorithm calculations
-- `room-change-rate-tests.groovy` - Temperature change rate learning
-- `airflow-adjustment-tests.groovy` - Minimum airflow safety calculations
-- `hubitat-flair-vents-app-tests.groovy` - Legacy comprehensive tests
-
-**Test Coverage:**
-- **50+ test cases** covering all critical algorithms
-- **Mathematical precision** validation
-- **Edge case testing** with null/zero/invalid inputs
-- **Multi-room scenarios** with realistic HVAC data
-- **Safety constraint validation** for minimum airflow
-
-**Architecture Testing:**
-- Temperature change rate learning algorithms
-- Exponential vent opening calculations
-- Rolling average statistical functions
-- HVAC mode determination logic
-- Airflow safety constraint validation
-
-### Testing Framework
-
-**Stack:**
-- **Spock Framework 2.3** - BDD-style testing
-- **Groovy 4.0.15** - Native language support
-- **JaCoCo 0.8.8** - Coverage reporting
-- **Hubitat CI 0.17** - Sandbox environment simulation
-
-**Coverage Limitations:**
-Due to Hubitat CI's dynamic class loading, JaCoCo cannot track coverage of sandbox-executed code. However, comprehensive test scenarios validate all critical functionality through direct method invocation.
-
-**Focus on test quality over coverage metrics** - the extensive scenarios validate behavior more effectively than coverage percentages.
-
-## External Documentation Links
-
-### Hubitat Development
-- [Hubitat Developer Documentation](https://docs.hubitat.com/)
-- [Hubitat Driver Capabilities](https://docs.hubitat.com/index.php?title=Driver_Capability_List)
-- [Hubitat App Development](https://docs.hubitat.com/index.php?title=Developer_Documentation)
-
-### Flair API Documentation
-- [Flair Developer Portal](https://docs.flair.co/)
-- [Flair API Reference](https://api.flair.co/api/docs) (requires authentication)
-
-### Community Resources
-- [Hubitat Community Thread](https://community.hubitat.com/t/new-control-flair-vents-with-hubitat-free-open-source-app-and-driver/132728)
-- [GitHub Repository](https://github.com/ljbotero/hubitat-flair-vents)
-
-### Testing Documentation
-- [TESTING.md](../TESTING.md) - Comprehensive testing guide
-- [Spock Framework Documentation](https://spockframework.org/spock/docs/)
-- [JaCoCo Documentation](https://www.jacoco.org/jacoco/trunk/doc/)
-
-## Technical Considerations
-
-### Limitations
-
-1. **Cloud Dependency** - Requires internet connection and Flair cloud availability
-2. **API Rate Limits** - Unknown limits, but uses conservative polling
-3. **Temperature Sensor Accuracy** - Relies on thermostat/sensor precision
-4. **Vent Motor Wear** - Minimizes adjustments to extend hardware life
-
-### Best Practices
-
-1. **Sensor Placement** - Position temperature sensors away from vents for accurate readings
-2. **Conventional Vent Count** - Accurately count non-smart vents for proper airflow calculation
-3. **HVAC Compatibility** - Ensure HVAC system can handle variable airflow
-4. **Room Configuration** - Mark unused rooms as inactive to improve efficiency
-
-### Security Considerations
-
-- OAuth tokens stored in Hubitat's secure state storage
-- All API communication over HTTPS
-- No sensitive data logged in debug mode
-- Client credentials should be kept confidential
+1. **Blocking Operations** - Always use async methods
+2. **Memory Leaks** - Clear state and unsubscribe properly
+3. **Race Conditions** - Use atomicState for shared data
+4. **Null Pointer Exceptions** - Use safe navigation (?.)
+5. **Excessive Logging** - Respect debug levels
+6. **Large State Objects** - Store IDs, not objects
+7. **Missing Error Handling** - Validate all inputs
+8. **Ignoring Timeouts** - Set appropriate HTTP timeouts
+9. **Poor Test Coverage** - TDD is mandatory
+10. **Undocumented Code** - Document as you code
+11. **Concurrent Modification** - Collect keys before modifying maps during iteration
+12. **Manual Authentication** - Implement automatic authentication and re-authentication
