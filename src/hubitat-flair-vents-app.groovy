@@ -1,4 +1,6 @@
 /**
+ *  Hubitat Flair Vents Integration
+ *  Version 0.2
  *
  *  Copyright 2024 Jaime Botero. All Rights Reserved
  *
@@ -138,15 +140,24 @@ def mainPage() {
   dynamicPage(name: 'mainPage', title: 'Setup', install: true, uninstall: true) {
     section('OAuth Setup') {
       input name: 'clientId', type: 'text', title: 'Client Id (OAuth 2.0)', required: true, submitOnChange: true
-      input name: 'clientSecret', type: 'text', title: 'Client Secret OAuth 2.0', required: true, submitOnChange: true
+      input name: 'clientSecret', type: 'password', title: 'Client Secret OAuth 2.0', required: true, submitOnChange: true
       paragraph '<small><b>Obtain your client Id and secret from ' +
                 "<a href='https://forms.gle/VohiQjWNv9CAP2ASA' target='_blank'>here</a></b></small>"
       if (settings?.clientId && settings?.clientSecret) {
-        input name: 'authenticate', type: 'button', title: 'Authenticate', submitOnChange: true
+        // Auto-authenticate when credentials are provided
+        if (!state.flairAccessToken || state.authError) {
+          runIn(1, 'autoAuthenticate')
+        }
+        if (state.flairAccessToken && !state.authError) {
+          paragraph "<span style='color: green;'>✓ Authenticated successfully</span>"
+        } else {
+          paragraph "<span style='color: orange;'>Authenticating...</span>"
+        }
       }
       if (state.authError) {
         section {
           paragraph "<span style='color: red;'>${state.authError}</span>"
+          input name: 'retryAuth', type: 'button', title: 'Retry Authentication', submitOnChange: true
         }
       }
     }
@@ -297,6 +308,19 @@ def uninstalled() {
 
 def initialize() {
   unsubscribe()
+  
+  // Check if we need to auto-authenticate on startup
+  if (settings?.clientId && settings?.clientSecret) {
+    if (!state.flairAccessToken) {
+      log 'No access token found on initialization, auto-authenticating...', 2
+      autoAuthenticate()
+    } else {
+      // Token exists, ensure hourly refresh is scheduled
+      unschedule(login)
+      runEvery1Hour(login)
+    }
+  }
+  
   if (settings.thermostat1) {
     subscribe(settings.thermostat1, 'thermostatOperatingState', thermostat1ChangeStateHandler)
     subscribe(settings.thermostat1, 'temperature', thermostat1ChangeTemp)
@@ -326,16 +350,33 @@ private openAllVents(Map ventIdsByRoomId, int percentOpen) {
 }
 
 private BigDecimal getRoomTemp(def vent) {
-  def tempDevice = settings."thermostat${vent.getId()}"
+  def ventId = vent.getId()
+  def roomName = vent.currentValue('room-name') ?: 'Unknown'
+  def tempDevice = settings."thermostat${ventId}"
+  
   if (tempDevice) {
-    def temp = tempDevice.currentValue('temperature') ?: 0
+    def temp = tempDevice.currentValue('temperature')
+    if (temp == null) {
+      log "WARNING: Temperature device ${tempDevice.getLabel()} for room '${roomName}' is not reporting temperature!", 2
+      // Fall back to room temperature
+      def roomTemp = vent.currentValue('room-current-temperature-c') ?: 0
+      log "Falling back to room temperature for '${roomName}': ${roomTemp}°C", 2
+      return roomTemp
+    }
     if (settings.thermostat1TempUnit == '2') {
       temp = convertFahrenheitToCentigrade(temp)
     }
-    log "Got temp from ${tempDevice.getLabel()}: ${temp}", 2
+    log "Got temp from ${tempDevice.getLabel()} for '${roomName}': ${temp}°C", 2
     return temp
   }
-  return vent.currentValue('room-current-temperature-c') ?: 0
+  
+  def roomTemp = vent.currentValue('room-current-temperature-c')
+  if (roomTemp == null) {
+    log "ERROR: No temperature available for room '${roomName}' - neither from Puck nor from room API!", 2
+    return 0
+  }
+  log "Using room temperature for '${roomName}': ${roomTemp}°C", 2
+  return roomTemp
 }
 
 private atomicStateUpdate(String stateKey, String key, value) {
@@ -507,7 +548,7 @@ def retryGetDataAsync(data) {
       
       // Check if request is already pending
       if (pendingRoomRequests[roomId]) {
-        log "Room data request already pending for room ${roomId} on retry, skipping", 3
+        // log "Room data request already pending for room ${roomId} on retry, skipping", 3
         return
       }
     }
@@ -563,6 +604,12 @@ def isValidResponse(resp) {
   }
   try {
     if (resp.hasError()) {
+      // Check for authentication failures
+      if (resp.getStatus() == 401 || resp.getStatus() == 403) {
+        log "Authentication error detected (${resp.getStatus()}), re-authenticating...", 2
+        runIn(1, 'autoReauthenticate')
+        return false
+      }
       // Don't log 404s at error level - they might be expected
       if (resp.getStatus() == 404) {
         log "HTTP 404 response", 1
@@ -587,7 +634,7 @@ def getDataAsync(String uri, String callback, data = null) {
     asynchttpGet(callback, httpParams, data)
     runInMillis(100, 'decrementActiveRequests')
   } else {
-    log "API throttling: Delaying GET request to ${uri}", 2
+    // log "API throttling: Delaying GET request to ${uri}", 2
     // For room data requests, store device ID instead of device object to avoid serialization issues
     def retryData = [uri: uri, callback: callback]
     if (data?.device && uri.contains('/room')) {
@@ -617,11 +664,11 @@ def patchDataAsync(String uri, String callback, body, data = null) {
     asynchttpPatch(callback, httpParams, data)
     runInMillis(100, 'decrementActiveRequests')
   } else {
-    log "API throttling: Delaying PATCH request to ${uri}", 2
+    // log "API throttling: Delaying PATCH request to ${uri}", 2
     def retryData = [uri: uri, callback: callback, body: body, data: data]
     runInMillis(API_CALL_DELAY_MS, 'retryPatchDataAsync', [data: retryData])
   }
-  logDetails("patchDataAsync: ${uri}", "body: ${body}", 2)
+  // logDetails("patchDataAsync: ${uri}", "body: ${body}", 2)
 }
 
 def noOpHandler(resp, data) {
@@ -673,9 +720,39 @@ def appButtonHandler(String btn) {
       unschedule(login)
       runEvery1Hour(login)
       break
+    case 'retryAuth':
+      login()
+      unschedule(login)
+      runEvery1Hour(login)
+      break
     case 'discoverDevices':
       discover()
       break
+  }
+}
+
+// Auto-authenticate when credentials are provided
+def autoAuthenticate() {
+  if (settings?.clientId && settings?.clientSecret && !state.flairAccessToken) {
+    log 'Auto-authenticating with provided credentials', 2
+    login()
+    unschedule(login)
+    runEvery1Hour(login)
+  }
+}
+
+// Automatically re-authenticate when token expires
+def autoReauthenticate() {
+  log 'Token expired or invalid, re-authenticating...', 2
+  state.remove('flairAccessToken')
+  // Clear any error state
+  state.remove('authError')
+  // Re-authenticate and reschedule
+  if (authenticate() == '') {
+    // If authentication succeeded, reschedule hourly refresh
+    unschedule(login)
+    runEvery1Hour(login)
+    log 'Re-authentication successful, rescheduled hourly token refresh', 2
   }
 }
 
@@ -1000,16 +1077,16 @@ def getDeviceData(device) {
   def roomId = device.currentValue('room-id')
   
   // Log cache status for this device
-  if (roomId) {
-    def cachedTimestamp = roomDataCacheTimestamps[roomId]
-    def isPending = pendingRoomRequests[roomId]
-    if (cachedTimestamp) {
-      def age = (now() - cachedTimestamp) / 1000
-      log "Room ${roomId} cache status: age=${age}s, pending=${isPending}", 2
-    } else {
-      log "Room ${roomId} cache status: no cache, pending=${isPending}", 2
-    }
-  }
+  // if (roomId) {
+    // def cachedTimestamp = roomDataCacheTimestamps[roomId]
+    // def isPending = pendingRoomRequests[roomId]
+    // if (cachedTimestamp) {
+      // def age = (now() - cachedTimestamp) / 1000
+      // log "Room ${roomId} cache status: age=${age}s, pending=${isPending}", 2
+    // } else {
+      // log "Room ${roomId} cache status: no cache, pending=${isPending}", 2
+    // }
+  // }
   
   // Check if it's a puck by looking for the percent-open attribute which only vents have
   def isPuck = !device.hasAttribute('percent-open')
@@ -1049,7 +1126,7 @@ def getRoomDataWithCache(device, deviceId, isPuck) {
     
     // Check if a request is already pending for this room
     if (pendingRoomRequests[roomId]) {
-      log "Room data request already pending for room ${roomId}, skipping duplicate request", 3
+      // log "Room data request already pending for room ${roomId}, skipping duplicate request", 3
       return
     }
     
@@ -1083,7 +1160,7 @@ def getDeviceDataWithCache(device, deviceId, deviceType, callback) {
   
   // Check if a request is already pending
   if (pendingDeviceRequests[cacheKey]) {
-    log "${deviceType} data request already pending for device ${deviceId}, skipping duplicate request", 3
+    // log "${deviceType} data request already pending for device ${deviceId}, skipping duplicate request", 3
     return
   }
   
@@ -1118,7 +1195,7 @@ def getDeviceReadingWithCache(device, deviceId, deviceType, callback) {
   
   // Check if a request is already pending
   if (pendingDeviceRequests[cacheKey]) {
-    log "${deviceType} reading request already pending for device ${deviceId}, skipping duplicate request", 3
+    // log "${deviceType} reading request already pending for device ${deviceId}, skipping duplicate request", 3
     return
   }
   
@@ -1206,27 +1283,37 @@ def clearDeviceCache() {
 
 // Periodic cleanup of pending request flags
 def cleanupPendingRequests() {
-  def clearedRooms = []
+  // Collect keys first to avoid concurrent modification
+  def roomsToClean = []
   pendingRoomRequests.each { roomId, isPending ->
     if (isPending) {
-      // Clear any pending flags that have been stuck for too long
-      pendingRoomRequests[roomId] = false
-      clearedRooms << roomId
+      roomsToClean << roomId
     }
-  }
-  if (clearedRooms.size() > 0) {
-    log "Cleared ${clearedRooms.size()} stuck pending request flags for rooms: ${clearedRooms.join(', ')}", 2
   }
   
-  def clearedDevices = []
+  // Now modify the map outside of iteration
+  roomsToClean.each { roomId ->
+    pendingRoomRequests[roomId] = false
+  }
+  
+  if (roomsToClean.size() > 0) {
+    log "Cleared ${roomsToClean.size()} stuck pending request flags for rooms: ${roomsToClean.join(', ')}", 2
+  }
+  
+  // Same for device requests
+  def devicesToClean = []
   pendingDeviceRequests.each { deviceKey, isPending ->
     if (isPending) {
-      pendingDeviceRequests[deviceKey] = false
-      clearedDevices << deviceKey
+      devicesToClean << deviceKey
     }
   }
-  if (clearedDevices.size() > 0) {
-    log "Cleared ${clearedDevices.size()} stuck pending request flags for devices: ${clearedDevices.join(', ')}", 2
+  
+  devicesToClean.each { deviceKey ->
+    pendingDeviceRequests[deviceKey] = false
+  }
+  
+  if (devicesToClean.size() > 0) {
+    log "Cleared ${devicesToClean.size()} stuck pending request flags for devices: ${devicesToClean.join(', ')}", 2
   }
 }
 
@@ -1677,54 +1764,86 @@ def finalizeRoomStates(data) {
       rollingAverage(atomicState.maxHvacRunningTime ?: totalRunningMinutes, totalRunningMinutes), 6)
 
   if (totalCycleMinutes >= MIN_MINUTES_TO_SETPOINT) {
-    // Track processed rooms to avoid duplicates
-    Set processedRooms = new HashSet()
+    // Track room rates that have been calculated
+    Map<String, BigDecimal> roomRates = [:]
     
     data.ventIdsByRoomId.each { roomId, ventIds ->
       for (ventId in ventIds) {
         def vent = getChildDevice(ventId)
         if (!vent) {
           log "Failed getting vent Id ${ventId}", 3
-          continue  // Changed from break to continue
+          continue
         }
         
         def roomName = vent.currentValue('room-name')
-        // Skip if room already processed
-        if (processedRooms.contains(roomName)) {
-          log "Skipping duplicate room update for '${roomName}' (ventId: ${ventId})", 2
+        def ratePropName = data.hvacMode == COOLING ? 'room-cooling-rate' : 'room-heating-rate'
+        
+        // Check if rate already calculated for this room
+        if (roomRates.containsKey(roomName)) {
+          // Use the already calculated rate for this room
+          def rate = roomRates[roomName]
+          sendEvent(vent, [name: ratePropName, value: rate])
+          log "Applying same ${ratePropName} (${roundBigDecimal(rate)}) to additional vent in '${roomName}'", 3
           continue
         }
-        processedRooms.add(roomName)
         
-        // Instead of instantaneous reading, compute the weighted average percent open.
+        // Calculate rate for this room (first vent in room)
         def percentOpen = (vent.currentValue('percent-open') ?: 0).toInteger()
         BigDecimal currentTemp = getRoomTemp(vent)
         BigDecimal lastStartTemp = vent.currentValue('room-starting-temperature-c') ?: 0
-        def ratePropName = data.hvacMode == COOLING ? 'room-cooling-rate' : 'room-heating-rate'
         BigDecimal currentRate = vent.currentValue(ratePropName) ?: 0
         def newRate = calculateRoomChangeRate(lastStartTemp, currentTemp, totalCycleMinutes, percentOpen, currentRate)
         
         if (newRate <= 0) {
           log "New rate for ${roomName} is ${newRate}", 3
-          // Instead of breaking, use a minimum rate if the vent was open
-          if (percentOpen > 0) {
-            // Use a very small rate to indicate the room is inefficient but not completely non-functional
+          
+          // Check if room is already at or beyond setpoint
+          def isAtSetpoint = hasRoomReachedSetpoint(data.hvacMode, 
+              getThermostatSetpoint(data.hvacMode), currentTemp)
+          
+          if (isAtSetpoint && currentRate > 0) {
+            // Room is already at setpoint - maintain last known efficiency
+            log "${roomName} is already at setpoint, maintaining last known efficiency rate: ${currentRate}", 3
+            newRate = currentRate  // Keep existing rate
+          } else if (percentOpen > 0) {
+            // Vent was open but no temperature change - use minimum rate
             newRate = MIN_TEMP_CHANGE_RATE
             log "Setting minimum rate for ${roomName} - no temperature change detected with ${percentOpen}% open vent", 3
-            // Send an event to indicate this room may have HVAC issues
-            sendEvent(vent, [name: 'room-hvac-ineffective', value: true])
+          } else if (currentRate == 0) {
+            // Room has zero efficiency and vent was closed - set baseline efficiency
+            def maxRate = data.hvacMode == COOLING ? 
+                atomicState.maxCoolingRate ?: MAX_TEMP_CHANGE_RATE : 
+                atomicState.maxHeatingRate ?: MAX_TEMP_CHANGE_RATE
+            newRate = maxRate * 0.1  // 10% of maximum as baseline
+            log "Setting baseline efficiency for ${roomName} (10% of max rate: ${newRate})", 3
           } else {
-            continue  // Skip if vent was closed
-          }
-        } else {
-          // Clear the ineffective flag if room is responding normally
-          if (vent.currentValue('room-hvac-ineffective') == 'true') {
-            sendEvent(vent, [name: 'room-hvac-ineffective', value: false])
+            continue  // Skip if vent was closed and room has existing efficiency
           }
         }
+        
         def rate = rollingAverage(currentRate, newRate, percentOpen / 100, 4)
         sendEvent(vent, [name: ratePropName, value: rate])
         log "Updating ${roomName}'s ${ratePropName} to ${roundBigDecimal(rate)}", 3
+        
+        // Store the calculated rate for this room
+        roomRates[roomName] = rate
+        
+        // Track maximum rates for baseline calculations
+        if (rate > 0) {
+          if (data.hvacMode == COOLING) {
+            def maxCoolRate = atomicState.maxCoolingRate ?: 0
+            if (rate > maxCoolRate) {
+              atomicState.maxCoolingRate = rate
+              log "Updated maximum cooling rate to ${rate}", 3
+            }
+          } else if (data.hvacMode == HEATING) {
+            def maxHeatRate = atomicState.maxHeatingRate ?: 0
+            if (rate > maxHeatRate) {
+              atomicState.maxHeatingRate = rate
+              log "Updated maximum heating rate to ${rate}", 3
+            }
+          }
+        }
       }
     }
   } else {
@@ -1859,7 +1978,16 @@ def getAttribsPerVentId(ventsByRoomId, String hvacMode) {
         def rate = hvacMode == COOLING ? (vent.currentValue('room-cooling-rate') ?: 0) : (vent.currentValue('room-heating-rate') ?: 0)
         rate = rate ?: 0
         def isActive = vent.currentValue('room-active') == 'true'
-        rateAndTemp[ventId] = [ rate: rate, temp: getRoomTemp(vent), active: isActive, name: vent.currentValue('room-name') ?: '' ]
+        def roomTemp = getRoomTemp(vent)
+        def roomName = vent.currentValue('room-name') ?: ''
+        
+        // Log rooms with zero efficiency for debugging
+        if (rate == 0) {
+          def tempSource = settings."thermostat${ventId}" ? "Puck ${settings."thermostat${ventId}".getLabel()}" : "Room API"
+          log "Room '${roomName}' has zero ${hvacMode} efficiency rate, temp=${roomTemp}°C from ${tempSource}", 2
+        }
+        
+        rateAndTemp[ventId] = [ rate: rate, temp: roomTemp, active: isActive, name: roomName ]
       } catch (err) {
         logError err
       }
