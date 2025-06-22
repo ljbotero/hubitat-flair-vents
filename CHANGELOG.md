@@ -2,6 +2,37 @@
 
 All notable changes to the Hubitat Flair Vents integration will be documented in this file.
 
+## [0.2] - 2025-06-22
+
+### Fixed
+- **Multiple Vents per Room**: Fixed issue where only one vent per room was getting its cooling/heating efficiency rate updated. Now all vents in the same room receive identical efficiency rates, ensuring consistent behavior across rooms with multiple vents.
+- **ConcurrentModificationException**: Fixed runtime error in `cleanupPendingRequests()` method that occurred when modifying collections during iteration. Now collects keys first before modifying the maps.
+- **Room HVAC Ineffective Flag**: Removed the problematic `room-hvac-ineffective` flag that was causing issues with room efficiency calculations.
+
+### Added
+- **Automatic Authentication**: OAuth authentication now runs automatically in multiple scenarios:
+  - When credentials are first entered
+  - On app initialization if token is missing
+  - Automatically re-authenticates when API returns 401/403 errors
+  - Maintains hourly token refresh schedule
+- **Version Number**: Added version number (0.2) to the main app file header for better version tracking
+- **Enhanced Temperature Fallback**: Improved temperature reading logic with better fallback handling and warning messages when temperature sensors are not reporting
+
+### Changed
+- **Security Enhancement**: Client Secret OAuth field now displays as a password field (dots/asterisks) instead of plain text
+- **Authentication UI**: Removed manual "Authenticate" button in favor of automatic authentication with status indicators:
+  - Shows "✓ Authenticated successfully" when authenticated
+  - Shows "Authenticating..." during authentication
+  - Shows retry button only on authentication failures
+- **Improved Logging**: Reduced verbose logging by commenting out repetitive cache status and pending request messages while maintaining important debug information
+
+### Technical Details
+- Modified `finalizeRoomStates()` to use a Map to track and apply consistent rates across all vents in the same room
+- Added `autoAuthenticate()` and `autoReauthenticate()` methods for automatic token management
+- Enhanced `initialize()` method to check and perform auto-authentication on startup
+- Updated `isValidResponse()` to detect authentication failures and trigger re-authentication
+- Changed collection iteration pattern in `cleanupPendingRequests()` to avoid concurrent modification
+
 ## [0.19] - 2025-06-18
 
 ### Added
