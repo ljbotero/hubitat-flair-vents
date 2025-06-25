@@ -2,8 +2,8 @@
   "packageName": "Flair Vents",
   "author": "Jaime Botero",
   "version": "0.16",
-  "betaVersion": "0.2",
-  "dateReleased": "2025-06-15",
+  "betaVersion": "0.21",
+  "dateReleased": "2025-06-25",
   "minimumHEVersion": "0.0.1",
   "documentationLink": "https://github.com/ljbotero/hubitat-flair-vents/blob/main/README.md",
   "communityLink": "https://community.hubitat.com/t/new-control-flair-vents-with-hubitat-free-open-source-app-and-driver/132728",
@@ -34,7 +34,7 @@
       "namespace": "bot.flair",
       "location": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/refs/heads/Beta/src/hubitat-flair-vents-pucks-driver.groovy",
       "betaLocation": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/refs/heads/Beta/src/hubitat-flair-vents-pucks-driver.groovy",
-      "required": true
+      "required": false
     }
   ]
 }
