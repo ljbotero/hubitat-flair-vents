@@ -1,6 +1,6 @@
 /**
  *  Hubitat Flair Vents Integration
- *  Version 0.21
+ *  Version 0.22
  *
  *  Copyright 2024 Jaime Botero. All Rights Reserved
  *
@@ -760,7 +760,17 @@ private initRequestTracking() {
 def canMakeRequest() {
   initRequestTracking()
   def stateObj = getStateObject()
-  return (stateObj.activeRequests ?: 0) < MAX_CONCURRENT_REQUESTS
+  def currentActiveRequests = stateObj.activeRequests ?: 0
+  
+  // Immediate stuck counter detection and reset
+  if (currentActiveRequests >= MAX_CONCURRENT_REQUESTS) {
+    log "CRITICAL: Active request counter is stuck at ${currentActiveRequests}/${MAX_CONCURRENT_REQUESTS} - resetting immediately", 1
+    stateObj.activeRequests = 0
+    log "Reset active request counter to 0 immediately", 1
+    return true  // Now we can make the request
+  }
+  
+  return currentActiveRequests < MAX_CONCURRENT_REQUESTS
 }
 
 // Increment active request counter
@@ -771,10 +781,12 @@ def incrementActiveRequests() {
 }
 
 // Decrement active request counter
-private decrementActiveRequests() {
+def decrementActiveRequests() {
   initRequestTracking()
   def stateObj = getStateObject()
-  stateObj.activeRequests = Math.max(0, (stateObj.activeRequests ?: 0) - 1)
+  def currentCount = stateObj.activeRequests ?: 0
+  stateObj.activeRequests = Math.max(0, currentCount - 1)
+  log "Decremented active requests from ${currentCount} to ${stateObj.activeRequests}", 1
 }
 
 // Retry methods for throttled requests
@@ -824,11 +836,22 @@ def retryGetDataAsync(data) {
 }
 
 def retryPatchDataAsync(data) {
-  if (!data || !data.uri) {
-    logError "retryPatchDataAsync called with invalid data: ${data}"
+  if (!data) {
+    logError "retryPatchDataAsync called with null data"
     return
   }
-  patchDataAsync(data.uri, data.callback, data.body, data.data)
+  
+  def uri = data.uri
+  def callback = data.callback  
+  def body = data.body
+  def callData = data.data
+  
+  if (!uri || !callback) {
+    logError "retryPatchDataAsync missing required fields - uri: ${uri}, callback: ${callback}"
+    return
+  }
+  
+  patchDataAsync(uri, callback, body, callData)
 }
 
 // Wrapper for log.error that respects debugLevel setting
@@ -910,6 +933,7 @@ def getDataAsync(String uri, String callback, data = null) {
 // If callback is null, we use a no-op callback.
 def patchDataAsync(String uri, String callback, body, data = null) {
   if (!callback) { callback = 'noOpHandler' }
+  
   if (canMakeRequest()) {
     incrementActiveRequests()
     def headers = [ Authorization: "Bearer ${state.flairAccessToken}" ]
@@ -921,7 +945,14 @@ def patchDataAsync(String uri, String callback, body, data = null) {
        timeout: HTTP_TIMEOUT_SECS,
        body: JsonOutput.toJson(body)
     ]
-    asynchttpPatch(callback, httpParams, data)
+    
+    try {
+      asynchttpPatch(callback, httpParams, data)
+    } catch (Exception e) {
+      log "HTTP PATCH exception: ${e.message}", 2
+      // Decrement on exception since the request didn't actually happen
+      decrementActiveRequests()
+    }
     runInMillis(100, 'decrementActiveRequests')
   } else {
     def retryData = [uri: uri, callback: callback, body: body, data: data]
@@ -1482,6 +1513,15 @@ def cleanupPendingRequests() {
   def pendingRoomRequests = state."${cacheKey}_pendingRoomRequests"
   def pendingDeviceRequests = state."${cacheKey}_pendingDeviceRequests"
   
+  // First, check if the active request counter is stuck
+  def stateObj = getStateObject()
+  def currentActiveRequests = stateObj.activeRequests ?: 0
+  if (currentActiveRequests >= MAX_CONCURRENT_REQUESTS) {
+    log "CRITICAL: Active request counter is stuck at ${currentActiveRequests}/${MAX_CONCURRENT_REQUESTS} - resetting to 0", 1
+    stateObj.activeRequests = 0
+    log "Reset active request counter to 0", 1
+  }
+  
   // Collect keys first to avoid concurrent modification
   def roomsToClean = []
   pendingRoomRequests.each { roomId, isPending ->
@@ -1797,8 +1837,8 @@ def getStructureData() {
   }
 }
 
-def patchVent(device, int percentOpen) {
-  def pOpen = Math.min(100, Math.max(0, percentOpen))
+def patchVentDevice(device, percentOpen) {
+  def pOpen = Math.min(100, Math.max(0, percentOpen as int))
   def currentOpen = (device?.currentValue('percent-open') ?: 0).toInteger()
   if (pOpen == currentOpen) {
     log "Keeping ${device} percent open unchanged at ${pOpen}%", 3
@@ -1808,19 +1848,50 @@ def patchVent(device, int percentOpen) {
   def deviceId = device.getDeviceNetworkId()
   def uri = "${BASE_URL}/api/vents/${deviceId}"
   def body = [ data: [ type: 'vents', attributes: [ 'percent-open': pOpen ] ] ]
-  patchDataAsync(uri, 'handleVentPatch', body, [device: device])
-  try {
-    safeSendEvent(device, [name: 'percent-open', value: pOpen])
-    safeSendEvent(device, [name: 'level', value: pOpen])
-  } catch (Exception e) {
-    log "Warning: Could not send device events: ${e.message}", 2
-  }
+  
+  // Don't update local state until API call succeeds
+  patchDataAsync(uri, 'handleVentPatch', body, [device: device, targetOpen: pOpen])
+}
+
+// Keep the old method name for backward compatibility
+def patchVent(device, percentOpen) {
+  patchVentDevice(device, percentOpen)
 }
 
 def handleVentPatch(resp, data) {
-  if (!isValidResponse(resp) || !data) { return }
-  traitExtract(data.device, resp.getJson(), 'percent-open', '%')
-  traitExtract(data.device, resp.getJson(), 'percent-open', 'level', '%')
+  if (!isValidResponse(resp) || !data) { 
+    log "Vent patch failed - invalid response or data", 2
+    return 
+  }
+  
+  // Get the actual device for processing (handle serialized device objects)
+  def device = null
+  if (data.device?.getDeviceNetworkId) {
+    device = data.device
+  } else if (data.device?.deviceNetworkId) {
+    device = getChildDevice(data.device.deviceNetworkId)
+  }
+  
+  if (!device) {
+    log "Could not get device object for vent patch processing", 2
+    return
+  }
+  
+  // Process the API response
+  def respJson = resp.getJson()
+  traitExtract(device, [data: respJson.data], 'percent-open', 'percent-open', '%')
+  traitExtract(device, [data: respJson.data], 'percent-open', 'level', '%')
+  
+  // Update local state ONLY after successful API response
+  if (data.targetOpen != null) {
+    try {
+      safeSendEvent(device, [name: 'percent-open', value: data.targetOpen])
+      safeSendEvent(device, [name: 'level', value: data.targetOpen])
+      log "Updated ${device.getLabel()} to ${data.targetOpen}%", 3
+    } catch (Exception e) {
+      log "Error updating device state: ${e.message}", 2
+    }
+  }
 }
 
 def patchRoom(device, active) {
