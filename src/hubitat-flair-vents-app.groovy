@@ -1,6 +1,6 @@
 /**
  *  Hubitat Flair Vents Integration
- *  Version 0.2
+ *  Version 0.21
  *
  *  Copyright 2024 Jaime Botero. All Rights Reserved
  *
@@ -28,21 +28,10 @@ import groovy.json.JsonOutput
 // Base URL for Flair API endpoints.
 @Field static final String BASE_URL = 'https://api.flair.co'
 
-// Room data cache to prevent redundant API calls
-@Field static final Map<String, Map> roomDataCache = [:]
-@Field static final Map<String, Long> roomDataCacheTimestamps = [:]
-@Field static final Long ROOM_CACHE_DURATION_MS = 60000 // 1 minute cache duration
-
-// Track pending room requests to prevent duplicate API calls
-@Field static final Map<String, Boolean> pendingRoomRequests = [:]
-
-// Device reading cache to prevent redundant API calls
-@Field static final Map<String, Map> deviceReadingCache = [:]
-@Field static final Map<String, Long> deviceReadingCacheTimestamps = [:]
+// Instance-based cache durations (reduced from 60s to 30s for better responsiveness)
+@Field static final Long ROOM_CACHE_DURATION_MS = 30000 // 30 second cache duration
 @Field static final Long DEVICE_CACHE_DURATION_MS = 30000 // 30 second cache duration for device readings
-
-// Track pending device reading requests
-@Field static final Map<String, Boolean> pendingDeviceRequests = [:]
+@Field static final Integer MAX_CACHE_SIZE = 50 // Maximum cache entries per instance
 
 // Content-Type header for API requests.
 @Field static final String CONTENT_TYPE = 'application/json'
@@ -76,6 +65,11 @@ import groovy.json.JsonOutput
 @Field static final BigDecimal MAX_TEMP_CHANGE_RATE = 1.5
 @Field static final BigDecimal MIN_TEMP_CHANGE_RATE = 0.001
 
+// Temperature sensor accuracy and noise filtering
+@Field static final BigDecimal TEMP_SENSOR_ACCURACY = 0.5  // ±0.5°C typical sensor accuracy
+@Field static final BigDecimal MIN_DETECTABLE_TEMP_CHANGE = 0.1  // Minimum change to consider real
+@Field static final Integer MIN_RUNTIME_FOR_RATE_CALC = 5  // Minimum minutes before calculating rate
+
 // Minimum combined vent airflow percentage across all vents (to ensure proper HVAC operation).
 @Field static final BigDecimal MIN_COMBINED_VENT_FLOW = 30.0
 
@@ -102,6 +96,13 @@ import groovy.json.JsonOutput
 
 // Temperature boundary adjustment for airflow calculations (in °C).
 @Field static final BigDecimal TEMP_BOUNDARY_ADJUSTMENT = 0.1
+
+// Thermostat hysteresis to prevent cycling (in °C).
+@Field static final BigDecimal THERMOSTAT_HYSTERESIS = 0.6  // ~1°F
+
+// Polling intervals based on HVAC state (in minutes).
+@Field static final Integer POLLING_INTERVAL_ACTIVE = 3     // When HVAC is running
+@Field static final Integer POLLING_INTERVAL_IDLE = 10      // When HVAC is idle
 
 // Delay before initializing room states after certain events (in milliseconds).
 @Field static final Integer INITIALIZATION_DELAY_MS = 3000
@@ -309,6 +310,9 @@ def uninstalled() {
 def initialize() {
   unsubscribe()
   
+  // Initialize instance-based caches
+  initializeInstanceCaches()
+  
   // Check if we need to auto-authenticate on startup
   if (settings?.clientId && settings?.clientSecret) {
     if (!state.flairAccessToken) {
@@ -329,8 +333,16 @@ def initialize() {
     def heatingSetpoint = thermostat1.currentValue('heatingSetpoint') ?: 0
     String hvacMode = calculateHvacMode(temp, coolingSetpoint, heatingSetpoint)
     runInMillis(INITIALIZATION_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
+    
+    // Set initial polling based on current thermostat state
+    def currentThermostatState = settings.thermostat1?.currentValue('thermostatOperatingState')
+    def initialInterval = (currentThermostatState in ['cooling', 'heating']) ? 
+        POLLING_INTERVAL_ACTIVE : POLLING_INTERVAL_IDLE
+    
+    log "Setting initial polling interval to ${initialInterval} minutes based on thermostat state: ${currentThermostatState}", 3
+    updateDevicePollingInterval(initialInterval)
   }
-  // Schedule periodic cleanup of caches and pending requests
+  // Schedule periodic cleanup of instance caches and pending requests
   runEvery5Minutes('cleanupPendingRequests')
   runEvery10Minutes('clearRoomCache')
   runEvery5Minutes('clearDeviceCache')
@@ -410,10 +422,6 @@ int roundToNearestMultiple(BigDecimal num) {
   return (int)(Math.round(num / granularity) * granularity)
 }
 
-// Legacy alias for backward compatibility with tests
-int roundToNearestFifth(BigDecimal num) {
-  return (int)(Math.round(num / 5) * 5)
-}
 
 def convertFahrenheitToCentigrade(BigDecimal tempValue) {
   (tempValue - 32) * (5 / 9)
@@ -481,6 +489,265 @@ private safeSendEvent(device, Map eventData) {
   }
 }
 
+// ------------------------------
+// Instance-Based Caching Infrastructure
+// ------------------------------
+
+// Get current time - now() is always available in Hubitat
+private getCurrentTime() {
+  return now()
+}
+
+// Get unique instance identifier
+private getInstanceId() {
+  try {
+    // Try to use app ID if available (production)
+    def appId = app?.getId()?.toString()
+    if (appId) {
+      return appId
+    }
+  } catch (Exception e) {
+    // Expected in test environment
+  }
+  
+  // For test environment, use current time as unique identifier
+  // This provides reasonable uniqueness for test instances
+  return "test-${now()}"
+}
+
+// Initialize instance-level cache variables
+private initializeInstanceCaches() {
+  def instanceId = getInstanceId()
+  def cacheKey = "instanceCache_${instanceId}"
+  
+  if (!state."${cacheKey}_initialized") {
+    state."${cacheKey}_roomCache" = [:]
+    state."${cacheKey}_roomCacheTimestamps" = [:]
+    state."${cacheKey}_deviceCache" = [:]
+    state."${cacheKey}_deviceCacheTimestamps" = [:]
+    state."${cacheKey}_pendingRoomRequests" = [:]
+    state."${cacheKey}_pendingDeviceRequests" = [:]
+    state."${cacheKey}_initialized" = true
+    log "Initialized instance-based caches for instance ${instanceId}", 3
+  }
+}
+
+// Room data caching methods
+def cacheRoomData(String roomId, Map roomData) {
+  initializeInstanceCaches()
+  def instanceId = getInstanceId()
+  def cacheKey = "instanceCache_${instanceId}"
+  
+  def roomCache = state."${cacheKey}_roomCache"
+  def roomCacheTimestamps = state."${cacheKey}_roomCacheTimestamps"
+  
+  // Implement LRU cache with max size
+  if (roomCache.size() >= MAX_CACHE_SIZE) {
+    // Remove least recently used entry (oldest access time)
+    def lruKey = null
+    def oldestAccessTime = Long.MAX_VALUE
+    roomCacheTimestamps.each { key, timestamp ->
+      if (timestamp < oldestAccessTime) {
+        oldestAccessTime = timestamp
+        lruKey = key
+      }
+    }
+    if (lruKey) {
+      roomCache.remove(lruKey)
+      roomCacheTimestamps.remove(lruKey)
+      log "Evicted LRU cache entry: ${lruKey}", 4
+    }
+  }
+  
+  roomCache[roomId] = roomData
+  roomCacheTimestamps[roomId] = getCurrentTime()
+}
+
+def getCachedRoomData(String roomId) {
+  initializeInstanceCaches()
+  def instanceId = getInstanceId()
+  def cacheKey = "instanceCache_${instanceId}"
+  
+  def roomCache = state."${cacheKey}_roomCache"
+  def roomCacheTimestamps = state."${cacheKey}_roomCacheTimestamps"
+  
+  def timestamp = roomCacheTimestamps[roomId]
+  if (!timestamp) return null
+  
+  if (isCacheExpired(roomId)) {
+    roomCache.remove(roomId)
+    roomCacheTimestamps.remove(roomId)
+    return null
+  }
+  
+  // Update access time for LRU tracking when item is accessed
+  roomCacheTimestamps[roomId] = getCurrentTime()
+  
+  return roomCache[roomId]
+}
+
+def getRoomCacheSize() {
+  initializeInstanceCaches()
+  def instanceId = getInstanceId()
+  def cacheKey = "instanceCache_${instanceId}"
+  def roomCache = state."${cacheKey}_roomCache"
+  return roomCache.size()
+}
+
+// Test helper method
+def cacheRoomDataWithTimestamp(String roomId, Map roomData, Long timestamp) {
+  initializeInstanceCaches()
+  def instanceId = getInstanceId()
+  def cacheKey = "instanceCache_${instanceId}"
+  
+  def roomCache = state."${cacheKey}_roomCache"
+  def roomCacheTimestamps = state."${cacheKey}_roomCacheTimestamps"
+  
+  roomCache[roomId] = roomData
+  roomCacheTimestamps[roomId] = timestamp
+}
+
+def isCacheExpired(String roomId) {
+  initializeInstanceCaches()
+  def instanceId = getInstanceId()
+  def cacheKey = "instanceCache_${instanceId}"
+  def roomCacheTimestamps = state."${cacheKey}_roomCacheTimestamps"
+  
+  def timestamp = roomCacheTimestamps[roomId]
+  if (!timestamp) return true
+  return (getCurrentTime() - timestamp) > ROOM_CACHE_DURATION_MS
+}
+
+// Pending request tracking
+def markRequestPending(String requestId) {
+  initializeInstanceCaches()
+  def instanceId = getInstanceId()
+  def cacheKey = "instanceCache_${instanceId}"
+  def pendingRequests = state."${cacheKey}_pendingRoomRequests"
+  pendingRequests[requestId] = true
+}
+
+def isRequestPending(String requestId) {
+  initializeInstanceCaches()
+  def instanceId = getInstanceId()
+  def cacheKey = "instanceCache_${instanceId}"
+  def pendingRequests = state."${cacheKey}_pendingRoomRequests"
+  return pendingRequests[requestId] == true
+}
+
+def clearPendingRequest(String requestId) {
+  initializeInstanceCaches()
+  def instanceId = getInstanceId()
+  def cacheKey = "instanceCache_${instanceId}"
+  def pendingRequests = state."${cacheKey}_pendingRoomRequests"
+  pendingRequests[requestId] = false
+}
+
+// Device reading caching methods
+def cacheDeviceReading(String deviceKey, Map deviceData) {
+  initializeInstanceCaches()
+  def instanceId = getInstanceId()
+  def cacheKey = "instanceCache_${instanceId}"
+  
+  def deviceCache = state."${cacheKey}_deviceCache"
+  def deviceCacheTimestamps = state."${cacheKey}_deviceCacheTimestamps"
+  
+  // Implement LRU cache with max size
+  if (deviceCache.size() >= MAX_CACHE_SIZE) {
+    // Remove least recently used entry (oldest access time)
+    def lruKey = null
+    def oldestAccessTime = Long.MAX_VALUE
+    deviceCacheTimestamps.each { key, timestamp ->
+      if (timestamp < oldestAccessTime) {
+        oldestAccessTime = timestamp
+        lruKey = key
+      }
+    }
+    if (lruKey) {
+      deviceCache.remove(lruKey)
+      deviceCacheTimestamps.remove(lruKey)
+      log "Evicted LRU device cache entry: ${lruKey}", 4
+    }
+  }
+  
+  deviceCache[deviceKey] = deviceData
+  deviceCacheTimestamps[deviceKey] = getCurrentTime()
+}
+
+def getCachedDeviceReading(String deviceKey) {
+  initializeInstanceCaches()
+  def instanceId = getInstanceId()
+  def cacheKey = "instanceCache_${instanceId}"
+  
+  def deviceCache = state."${cacheKey}_deviceCache"
+  def deviceCacheTimestamps = state."${cacheKey}_deviceCacheTimestamps"
+  
+  def timestamp = deviceCacheTimestamps[deviceKey]
+  if (!timestamp) return null
+  
+  if ((getCurrentTime() - timestamp) > DEVICE_CACHE_DURATION_MS) {
+    deviceCache.remove(deviceKey)
+    deviceCacheTimestamps.remove(deviceKey)
+    return null
+  }
+  
+  // Update access time for LRU tracking when item is accessed
+  deviceCacheTimestamps[deviceKey] = getCurrentTime()
+  
+  return deviceCache[deviceKey]
+}
+
+// Device pending request tracking
+def isDeviceRequestPending(String deviceKey) {
+  initializeInstanceCaches()
+  def instanceId = getInstanceId()
+  def cacheKey = "instanceCache_${instanceId}"
+  def pendingRequests = state."${cacheKey}_pendingDeviceRequests"
+  return pendingRequests[deviceKey] == true
+}
+
+def markDeviceRequestPending(String deviceKey) {
+  initializeInstanceCaches()
+  def instanceId = getInstanceId()
+  def cacheKey = "instanceCache_${instanceId}"
+  def pendingRequests = state."${cacheKey}_pendingDeviceRequests"
+  pendingRequests[deviceKey] = true
+}
+
+def clearDeviceRequestPending(String deviceKey) {
+  initializeInstanceCaches()
+  def instanceId = getInstanceId()
+  def cacheKey = "instanceCache_${instanceId}"
+  def pendingRequests = state."${cacheKey}_pendingDeviceRequests"
+  pendingRequests[deviceKey] = false
+}
+
+// Clear all instance caches
+def clearInstanceCache() {
+  initializeInstanceCaches()
+  def instanceId = getInstanceId()
+  def cacheKey = "instanceCache_${instanceId}"
+  
+  def roomCache = state."${cacheKey}_roomCache"
+  def roomCacheTimestamps = state."${cacheKey}_roomCacheTimestamps"
+  def deviceCache = state."${cacheKey}_deviceCache"
+  def deviceCacheTimestamps = state."${cacheKey}_deviceCacheTimestamps"
+  def pendingRoomRequests = state."${cacheKey}_pendingRoomRequests"
+  def pendingDeviceRequests = state."${cacheKey}_pendingDeviceRequests"
+  
+  roomCache.clear()
+  roomCacheTimestamps.clear()
+  deviceCache.clear()
+  deviceCacheTimestamps.clear()
+  pendingRoomRequests.clear()
+  pendingDeviceRequests.clear()
+  log "Cleared all instance caches", 3
+}
+
+// ------------------------------
+// End Instance-Based Caching Infrastructure
+// ------------------------------
+
 // Initialize request tracking
 private initRequestTracking() {
   def stateObj = getStateObject()
@@ -490,14 +757,14 @@ private initRequestTracking() {
 }
 
 // Check if we can make a request (under concurrent limit)
-private canMakeRequest() {
+def canMakeRequest() {
   initRequestTracking()
   def stateObj = getStateObject()
   return (stateObj.activeRequests ?: 0) < MAX_CONCURRENT_REQUESTS
 }
 
 // Increment active request counter
-private incrementActiveRequests() {
+def incrementActiveRequests() {
   initRequestTracking()
   def stateObj = getStateObject()
   stateObj.activeRequests = (stateObj.activeRequests ?: 0) + 1
@@ -533,21 +800,16 @@ def retryGetDataAsync(data) {
     def roomId = device.currentValue('room-id')
     
     if (roomId) {
-      // Check cache first
-      def currentTime = now()
-      def cachedTimestamp = roomDataCacheTimestamps[roomId]
-      
-      if (cachedTimestamp && (currentTime - cachedTimestamp) < ROOM_CACHE_DURATION_MS) {
-        def cachedData = roomDataCache[roomId]
-        if (cachedData) {
-          log "Using cached room data for room ${roomId} on retry (cached ${(currentTime - cachedTimestamp) / 1000}s ago)", 3
-          processRoomTraits(device, cachedData)
-          return
-        }
+      // Check cache first using instance-based cache
+      def cachedData = getCachedRoomData(roomId)
+      if (cachedData) {
+        log "Using cached room data for room ${roomId} on retry", 3
+        processRoomTraits(device, cachedData)
+        return
       }
       
       // Check if request is already pending
-      if (pendingRoomRequests[roomId]) {
+      if (isRequestPending(roomId)) {
         // log "Room data request already pending for room ${roomId} on retry, skipping", 3
         return
       }
@@ -634,8 +896,6 @@ def getDataAsync(String uri, String callback, data = null) {
     asynchttpGet(callback, httpParams, data)
     runInMillis(100, 'decrementActiveRequests')
   } else {
-    // log "API throttling: Delaying GET request to ${uri}", 2
-    // For room data requests, store device ID instead of device object to avoid serialization issues
     def retryData = [uri: uri, callback: callback]
     if (data?.device && uri.contains('/room')) {
       retryData.data = [deviceId: data.device.getDeviceNetworkId()]
@@ -664,11 +924,9 @@ def patchDataAsync(String uri, String callback, body, data = null) {
     asynchttpPatch(callback, httpParams, data)
     runInMillis(100, 'decrementActiveRequests')
   } else {
-    // log "API throttling: Delaying PATCH request to ${uri}", 2
     def retryData = [uri: uri, callback: callback, body: body, data: data]
     runInMillis(API_CALL_DELAY_MS, 'retryPatchDataAsync', [data: retryData])
   }
-  // logDetails("patchDataAsync: ${uri}", "body: ${body}", 2)
 }
 
 def noOpHandler(resp, data) {
@@ -778,49 +1036,6 @@ private void discover() {
   getDataAsync(allPucksUri, 'handleAllPucks')
 }
 
-def handleStructureDevices(resp, data) {
-  if (!isValidResponse(resp)) { return }
-  def respJson = resp.getJson()
-  
-  // Check if we have included data (pucks and vents)
-  if (respJson?.included) {
-    def ventCount = 0
-    def puckCount = 0
-    
-    respJson.included.each { it ->
-      if (it.type == 'vents' || it.type == 'pucks') {
-        if (it.type == 'vents') {
-          ventCount++
-        } else if (it.type == 'pucks') {
-          puckCount++
-        }
-        def device = [
-          id   : it.id,
-          type : it.type,
-          label: it.attributes.name
-        ]
-        def dev = makeRealDevice(device)
-        if (dev && it.type == 'vents') {
-          processVentTraits(dev, [data: it])
-        }
-      }
-    }
-    
-    log "Discovered ${ventCount} vents and ${puckCount} pucks from structure include", 3
-    
-    if (ventCount == 0 && puckCount == 0) {
-      // Fall back to vents-only endpoint
-      def structureId = getStructureId()
-      def ventsUri = "${BASE_URL}/api/structures/${structureId}/vents"
-      getDataAsync(ventsUri, 'handleDeviceList')
-    }
-  } else {
-    // Fall back to vents-only endpoint
-    def structureId = getStructureId()
-    def ventsUri = "${BASE_URL}/api/structures/${structureId}/vents"
-    getDataAsync(ventsUri, 'handleDeviceList')
-  }
-}
 
 def handleAllPucks(resp, data) {
   try {
@@ -978,22 +1193,6 @@ def handleRoomsWithPucks(resp, data) {
   }
 }
 
-def handlePuckDetails(resp, data) {
-  if (!isValidResponse(resp)) { return }
-  def respJson = resp.getJson()
-  
-  if (respJson?.data) {
-    def puckData = respJson.data
-    def puckName = puckData.attributes?.name ?: "Puck-${puckData.id}"
-    def device = [
-      id   : puckData.id,
-      type : 'pucks',
-      label: puckName
-    ]
-    def dev = makeRealDevice(device)
-    log "Created puck device from details: ${puckName}", 2
-  }
-}
 
 def handleDeviceList(resp, data) {
   log "handleDeviceList called for ${data?.deviceType}", 2
@@ -1076,18 +1275,6 @@ def getDeviceData(device) {
   def deviceId = device.getDeviceNetworkId()
   def roomId = device.currentValue('room-id')
   
-  // Log cache status for this device
-  // if (roomId) {
-    // def cachedTimestamp = roomDataCacheTimestamps[roomId]
-    // def isPending = pendingRoomRequests[roomId]
-    // if (cachedTimestamp) {
-      // def age = (now() - cachedTimestamp) / 1000
-      // log "Room ${roomId} cache status: age=${age}s, pending=${isPending}", 2
-    // } else {
-      // log "Room ${roomId} cache status: no cache, pending=${isPending}", 2
-    // }
-  // }
-  
   // Check if it's a puck by looking for the percent-open attribute which only vents have
   def isPuck = !device.hasAttribute('percent-open')
   
@@ -1110,28 +1297,22 @@ def getRoomDataWithCache(device, deviceId, isPuck) {
   def roomId = device.currentValue('room-id')
   
   if (roomId) {
-    def currentTime = now()
-    def cachedTimestamp = roomDataCacheTimestamps[roomId]
-    
-    // Check if we have valid cached data
-    if (cachedTimestamp && (currentTime - cachedTimestamp) < ROOM_CACHE_DURATION_MS) {
-      def cachedData = roomDataCache[roomId]
-      if (cachedData) {
-        log "Using cached room data for room ${roomId} (cached ${(currentTime - cachedTimestamp) / 1000}s ago)", 3
-        // Process the cached room data
-        processRoomTraits(device, cachedData)
-        return
-      }
+    // Check cache first using instance-based cache
+    def cachedData = getCachedRoomData(roomId)
+    if (cachedData) {
+      log "Using cached room data for room ${roomId}", 3
+      processRoomTraits(device, cachedData)
+      return
     }
     
     // Check if a request is already pending for this room
-    if (pendingRoomRequests[roomId]) {
+    if (isRequestPending(roomId)) {
       // log "Room data request already pending for room ${roomId}, skipping duplicate request", 3
       return
     }
     
     // Mark this room as having a pending request
-    pendingRoomRequests[roomId] = true
+    markRequestPending(roomId)
   }
   
   // No valid cache and no pending request, make the API call
@@ -1142,30 +1323,26 @@ def getRoomDataWithCache(device, deviceId, isPuck) {
 // New function to handle device data with caching (for pucks)
 def getDeviceDataWithCache(device, deviceId, deviceType, callback) {
   def cacheKey = "${deviceType}_${deviceId}"
-  def currentTime = now()
-  def cachedTimestamp = deviceReadingCacheTimestamps[cacheKey]
   
-  // Check if we have valid cached data
-  if (cachedTimestamp && (currentTime - cachedTimestamp) < DEVICE_CACHE_DURATION_MS) {
-    def cachedData = deviceReadingCache[cacheKey]
-    if (cachedData) {
-      log "Using cached ${deviceType} data for device ${deviceId} (cached ${(currentTime - cachedTimestamp) / 1000}s ago)", 3
-      // Process the cached data
-      if (callback == 'handlePuckGet') {
-        handlePuckGet([getJson: { cachedData }], [device: device])
-      }
-      return
+  // Check cache first using instance-based cache
+  def cachedData = getCachedDeviceReading(cacheKey)
+  if (cachedData) {
+    log "Using cached ${deviceType} data for device ${deviceId}", 3
+    // Process the cached data
+    if (callback == 'handlePuckGet') {
+      handlePuckGet([getJson: { cachedData }], [device: device])
     }
+    return
   }
   
   // Check if a request is already pending
-  if (pendingDeviceRequests[cacheKey]) {
+  if (isDeviceRequestPending(cacheKey)) {
     // log "${deviceType} data request already pending for device ${deviceId}, skipping duplicate request", 3
     return
   }
   
   // Mark this device as having a pending request
-  pendingDeviceRequests[cacheKey] = true
+  markDeviceRequestPending(cacheKey)
   
   // No valid cache and no pending request, make the API call
   def uri = "${BASE_URL}/api/${deviceType}/${deviceId}"
@@ -1175,32 +1352,28 @@ def getDeviceDataWithCache(device, deviceId, deviceType, callback) {
 // New function to handle device reading with caching
 def getDeviceReadingWithCache(device, deviceId, deviceType, callback) {
   def cacheKey = "${deviceType}_reading_${deviceId}"
-  def currentTime = now()
-  def cachedTimestamp = deviceReadingCacheTimestamps[cacheKey]
   
-  // Check if we have valid cached data
-  if (cachedTimestamp && (currentTime - cachedTimestamp) < DEVICE_CACHE_DURATION_MS) {
-    def cachedData = deviceReadingCache[cacheKey]
-    if (cachedData) {
-      log "Using cached ${deviceType} reading for device ${deviceId} (cached ${(currentTime - cachedTimestamp) / 1000}s ago)", 3
-      // Process the cached data
-      if (callback == 'handlePuckReadingGet') {
-        handlePuckReadingGet([getJson: { cachedData }], [device: device])
-      } else if (callback == 'handleDeviceGet') {
-        handleDeviceGet([getJson: { cachedData }], [device: device])
-      }
-      return
+  // Check cache first using instance-based cache
+  def cachedData = getCachedDeviceReading(cacheKey)
+  if (cachedData) {
+    log "Using cached ${deviceType} reading for device ${deviceId}", 3
+    // Process the cached data
+    if (callback == 'handlePuckReadingGet') {
+      handlePuckReadingGet([getJson: { cachedData }], [device: device])
+    } else if (callback == 'handleDeviceGet') {
+      handleDeviceGet([getJson: { cachedData }], [device: device])
     }
+    return
   }
   
   // Check if a request is already pending
-  if (pendingDeviceRequests[cacheKey]) {
+  if (isDeviceRequestPending(cacheKey)) {
     // log "${deviceType} reading request already pending for device ${deviceId}, skipping duplicate request", 3
     return
   }
   
   // Mark this device as having a pending request
-  pendingDeviceRequests[cacheKey] = true
+  markDeviceRequestPending(cacheKey)
   
   // No valid cache and no pending request, make the API call
   def uri = deviceType == 'pucks' ? "${BASE_URL}/api/pucks/${deviceId}/current-reading" : "${BASE_URL}/api/vents/${deviceId}/current-reading"
@@ -1218,71 +1391,97 @@ def handleRoomGetWithCache(resp, data) {
   def roomId = null
   
   try {
+    // First, try to get roomId from device for cleanup purposes
+    if (data?.device) {
+      roomId = data.device.currentValue('room-id')
+    }
+    
     if (isValidResponse(resp) && data?.device) {
       roomData = resp.getJson()
-      roomId = roomData?.data?.id
+      // Update roomId if we got it from response
+      if (roomData?.data?.id) {
+        roomId = roomData.data.id
+      }
       
       if (roomId) {
-        // Cache the room data
-        roomDataCache[roomId] = roomData
-        roomDataCacheTimestamps[roomId] = now()
+        // Cache the room data using instance-based cache
+        cacheRoomData(roomId, roomData)
         log "Cached room data for room ${roomId}", 3
       }
       
       processRoomTraits(data.device, roomData)
+    } else {
+      // Log the error for debugging
+      log "Room data request failed for device ${data?.device}, status: ${resp?.getStatus()}", 2
     }
+  } catch (Exception e) {
+    log "Error in handleRoomGetWithCache: ${e.message}", 1
   } finally {
     // Always clear the pending flag, even if the request failed
     if (roomId) {
-      pendingRoomRequests[roomId] = false
-    } else if (data?.device) {
-      // Try to get roomId from device if response failed
-      def deviceRoomId = data.device.currentValue('room-id')
-      if (deviceRoomId) {
-        pendingRoomRequests[deviceRoomId] = false
-      }
+      clearPendingRequest(roomId)
+      log "Cleared pending request for room ${roomId}", 1
     }
   }
 }
 
 // Add a method to clear the cache periodically (optional)
 def clearRoomCache() {
-  def currentTime = now()
+  initializeInstanceCaches()
+  def instanceId = getInstanceId()
+  def cacheKey = "instanceCache_${instanceId}"
+  def currentTime = getCurrentTime()
   def expiredRooms = []
   
-  roomDataCacheTimestamps.each { roomId, timestamp ->
+  def roomCacheTimestamps = state."${cacheKey}_roomCacheTimestamps"
+  def roomCache = state."${cacheKey}_roomCache"
+  
+  roomCacheTimestamps.each { roomId, timestamp ->
     if ((currentTime - timestamp) > ROOM_CACHE_DURATION_MS) {
       expiredRooms << roomId
     }
   }
   
   expiredRooms.each { roomId ->
-    roomDataCache.remove(roomId)
-    roomDataCacheTimestamps.remove(roomId)
+    roomCache.remove(roomId)
+    roomCacheTimestamps.remove(roomId)
     log "Cleared expired cache for room ${roomId}", 4
   }
 }
 
 // Clear device cache periodically
 def clearDeviceCache() {
-  def currentTime = now()
+  initializeInstanceCaches()
+  def instanceId = getInstanceId()
+  def cacheKey = "instanceCache_${instanceId}"
+  def currentTime = getCurrentTime()
   def expiredDevices = []
   
-  deviceReadingCacheTimestamps.each { deviceKey, timestamp ->
+  def deviceCacheTimestamps = state."${cacheKey}_deviceCacheTimestamps"
+  def deviceCache = state."${cacheKey}_deviceCache"
+  
+  deviceCacheTimestamps.each { deviceKey, timestamp ->
     if ((currentTime - timestamp) > DEVICE_CACHE_DURATION_MS) {
       expiredDevices << deviceKey
     }
   }
   
   expiredDevices.each { deviceKey ->
-    deviceReadingCache.remove(deviceKey)
-    deviceReadingCacheTimestamps.remove(deviceKey)
+    deviceCache.remove(deviceKey)
+    deviceCacheTimestamps.remove(deviceKey)
     log "Cleared expired cache for device ${deviceKey}", 4
   }
 }
 
 // Periodic cleanup of pending request flags
 def cleanupPendingRequests() {
+  initializeInstanceCaches()
+  def instanceId = getInstanceId()
+  def cacheKey = "instanceCache_${instanceId}"
+  
+  def pendingRoomRequests = state."${cacheKey}_pendingRoomRequests"
+  def pendingDeviceRequests = state."${cacheKey}_pendingDeviceRequests"
+  
   // Collect keys first to avoid concurrent modification
   def roomsToClean = []
   pendingRoomRequests.each { roomId, isPending ->
@@ -1332,18 +1531,22 @@ def handleDeviceGetWithCache(resp, data) {
       deviceData = resp.getJson()
       
       if (cacheKey && deviceData) {
-        // Cache the device data
-        deviceReadingCache[cacheKey] = deviceData
-        deviceReadingCacheTimestamps[cacheKey] = now()
+        // Cache the device data using instance-based cache
+        cacheDeviceReading(cacheKey, deviceData)
         log "Cached device reading for ${cacheKey}", 3
       }
       
       processVentTraits(data.device, deviceData)
+    } else {
+      log "Device reading request failed for ${cacheKey}, status: ${resp?.getStatus()}", 2
     }
+  } catch (Exception e) {
+    log "Error in handleDeviceGetWithCache: ${e.message}", 1
   } finally {
     // Always clear the pending flag
     if (cacheKey) {
-      pendingDeviceRequests[cacheKey] = false
+      clearDeviceRequestPending(cacheKey)
+      log "Cleared pending device request for ${cacheKey}", 1
     }
   }
 }
@@ -1391,9 +1594,8 @@ def handlePuckGetWithCache(resp, data) {
       deviceData = resp.getJson()
       
       if (cacheKey && deviceData) {
-        // Cache the device data
-        deviceReadingCache[cacheKey] = deviceData
-        deviceReadingCacheTimestamps[cacheKey] = now()
+        // Cache the device data using instance-based cache
+        cacheDeviceReading(cacheKey, deviceData)
         log "Cached puck data for ${cacheKey}", 3
       }
       
@@ -1403,7 +1605,7 @@ def handlePuckGetWithCache(resp, data) {
   } finally {
     // Always clear the pending flag
     if (cacheKey) {
-      pendingDeviceRequests[cacheKey] = false
+      clearDeviceRequestPending(cacheKey)
     }
   }
 }
@@ -1446,9 +1648,8 @@ def handlePuckReadingGetWithCache(resp, data) {
       deviceData = resp.getJson()
       
       if (cacheKey && deviceData) {
-        // Cache the device data
-        deviceReadingCache[cacheKey] = deviceData
-        deviceReadingCacheTimestamps[cacheKey] = now()
+        // Cache the device data using instance-based cache
+        cacheDeviceReading(cacheKey, deviceData)
         log "Cached puck reading for ${cacheKey}", 3
       }
       
@@ -1458,7 +1659,7 @@ def handlePuckReadingGetWithCache(resp, data) {
   } finally {
     // Always clear the pending flag
     if (cacheKey) {
-      pendingDeviceRequests[cacheKey] = false
+      clearDeviceRequestPending(cacheKey)
     }
   }
 }
@@ -1580,14 +1781,14 @@ def getStructureData() {
     if (!resp.success) { return }
     def response = resp.getData()
     if (!response) {
-      error 'getStructureData: no data'
+      logError 'getStructureData: no data'
       return
     }
     // Only log full response at debug level 1
     logDetails 'Structure response: ', response, 1
     def myStruct = response.data.first()
     if (!myStruct?.attributes) {
-      error 'getStructureData: no structure data'
+      logError 'getStructureData: no structure data'
       return
     }
     // Log only essential fields at level 3
@@ -1644,8 +1845,20 @@ def thermostat1ChangeTemp(evt) {
   def heatingSetpoint = thermostat1.currentValue('heatingSetpoint') ?: 0
   String hvacMode = calculateHvacMode(temp, coolingSetpoint, heatingSetpoint)
   def thermostatSetpoint = getThermostatSetpoint(hvacMode)
-  if (isThermostatAboutToChangeState(hvacMode, thermostatSetpoint, temp)) {
-    runInMillis(INITIALIZATION_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
+  
+  // Apply hysteresis to prevent frequent cycling
+  def lastSignificantTemp = atomicState.lastSignificantTemp ?: temp
+  def tempDiff = Math.abs(temp - lastSignificantTemp)
+  
+  if (tempDiff >= THERMOSTAT_HYSTERESIS) {
+    atomicState.lastSignificantTemp = temp
+    log "Significant temperature change detected: ${tempDiff}°C (threshold: ${THERMOSTAT_HYSTERESIS}°C)", 2
+    
+    if (isThermostatAboutToChangeState(hvacMode, thermostatSetpoint, temp)) {
+      runInMillis(INITIALIZATION_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
+    }
+  } else {
+    log "Temperature change ${tempDiff}°C is below hysteresis threshold ${THERMOSTAT_HYSTERESIS}°C - ignoring", 3
   }
 }
 
@@ -1680,6 +1893,9 @@ def thermostat1ChangeStateHandler(evt) {
       recordStartingTemperatures()
       runEvery5Minutes('evaluateRebalancingVents')
       runEvery30Minutes('reBalanceVents')
+      
+      // Update polling to active interval when HVAC is running
+      updateDevicePollingInterval(POLLING_INTERVAL_ACTIVE)
       break
     default:
       unschedule(initializeRoomStates)
@@ -1698,6 +1914,9 @@ def thermostat1ChangeStateHandler(evt) {
         runInMillis(TEMP_READINGS_DELAY_MS, 'finalizeRoomStates', [data: params])
         atomicState.remove('thermostat1State')
       }
+      
+      // Update polling to idle interval when HVAC is idle
+      updateDevicePollingInterval(POLLING_INTERVAL_IDLE)
       break
   }
 }
@@ -2041,17 +2260,6 @@ def calculateVentOpenPercentage(String roomName, BigDecimal startTemp, BigDecima
   return percentageOpen
 }
 
-// Legacy alias for backward compatibility with tests (typo version)
-def calculateVentOpenPercentange(def roomName, def startTemp, def setpoint, def hvacMode, def maxRate, def longestTime) {
-  return calculateVentOpenPercentage(
-    roomName as String, 
-    startTemp as BigDecimal, 
-    setpoint as BigDecimal, 
-    hvacMode as String, 
-    maxRate as BigDecimal, 
-    longestTime as BigDecimal
-  )
-}
 
 def calculateLongestMinutesToTarget(rateAndTempPerVentId, String hvacMode, BigDecimal setpoint, maxRunningTime, boolean closeInactive = true) {
   def longestTime = -1
@@ -2111,18 +2319,40 @@ def calculateRoomChangeRate(def lastStartTemp, def currentTemp, def totalMinutes
 
 def calculateRoomChangeRate(BigDecimal lastStartTemp, BigDecimal currentTemp, BigDecimal totalMinutes, int percentOpen, BigDecimal currentRate) {
   if (totalMinutes < MIN_MINUTES_TO_SETPOINT) {
-    log "Insuficient number of minutes required to calculate change rate (${totalMinutes} should be greather than ${MIN_MINUTES_TO_SETPOINT})", 3
+    log "Insufficient number of minutes required to calculate change rate (${totalMinutes} should be greater than ${MIN_MINUTES_TO_SETPOINT})", 3
     return -1
   }
+  
+  // Skip rate calculation if HVAC hasn't run long enough for meaningful temperature changes
+  if (totalMinutes < MIN_RUNTIME_FOR_RATE_CALC) {
+    log "HVAC runtime too short for rate calculation: ${totalMinutes} minutes < ${MIN_RUNTIME_FOR_RATE_CALC} minutes minimum", 3
+    return -1
+  }
+  
   if (percentOpen <= MIN_PERCENTAGE_OPEN) {
     log "Vent was opened less than ${MIN_PERCENTAGE_OPEN}% (${percentOpen}), therefore it is being excluded", 3
     return -1
   }
+  
   BigDecimal diffTemps = Math.abs(lastStartTemp - currentTemp)
   
-  // Enhanced logging for zero temperature change debugging
-  if (diffTemps < 0.01) {
-    log "Zero/minimal temperature change detected: startTemp=${lastStartTemp}°C, currentTemp=${currentTemp}°C, diffTemps=${diffTemps}°C, vent was ${percentOpen}% open", 2
+  // Check if temperature change is within sensor noise/accuracy range
+  if (diffTemps < MIN_DETECTABLE_TEMP_CHANGE) {
+    log "Temperature change (${diffTemps}°C) is below minimum detectable threshold (${MIN_DETECTABLE_TEMP_CHANGE}°C) - likely sensor noise", 2
+    
+    // If no meaningful temperature change but vent was significantly open, assign minimum efficiency
+    if (percentOpen >= 30) {
+      log "Vent was ${percentOpen}% open but no meaningful temperature change detected - assigning minimum efficiency", 2
+      return MIN_TEMP_CHANGE_RATE
+    }
+    return -1
+  }
+  
+  // Account for sensor accuracy when detecting minimal changes
+  if (diffTemps < TEMP_SENSOR_ACCURACY) {
+    log "Temperature change (${diffTemps}°C) is within sensor accuracy range (±${TEMP_SENSOR_ACCURACY}°C) - adjusting calculation", 2
+    // Use a minimum reliable change for calculation to avoid division by near-zero
+    diffTemps = Math.max(diffTemps, MIN_DETECTABLE_TEMP_CHANGE)
   }
   
   BigDecimal rate = diffTemps / totalMinutes
@@ -2133,10 +2363,40 @@ def calculateRoomChangeRate(BigDecimal lastStartTemp, BigDecimal currentTemp, Bi
     log "Change rate (${roundBigDecimal(approxRate)}) is greater than ${MAX_TEMP_CHANGE_RATE}, therefore it is being excluded", 3
     return -1
   } else if (approxRate < MIN_TEMP_CHANGE_RATE) {
-    log "Change rate (${roundBigDecimal(approxRate)}) is lower than ${MIN_TEMP_CHANGE_RATE}, therefore it is being excluded (startTemp=${lastStartTemp}, currentTemp=${currentTemp}, percentOpen=${percentOpen}%)", 3
-    return -1
+    log "Change rate (${roundBigDecimal(approxRate)}) is lower than ${MIN_TEMP_CHANGE_RATE}, adjusting to minimum (startTemp=${lastStartTemp}, currentTemp=${currentTemp}, percentOpen=${percentOpen}%)", 3
+    // Return minimum rate instead of excluding to prevent zero efficiency
+    return MIN_TEMP_CHANGE_RATE
   }
   return approxRate
+}
+
+// ------------------------------
+// Dynamic Polling Control
+// ------------------------------
+
+def updateDevicePollingInterval(Integer intervalMinutes) {
+  log "Updating device polling interval to ${intervalMinutes} minutes", 3
+  
+  // Update all child vents
+  getChildDevices()?.findAll { it.typeName == 'Flair vents' }?.each { device ->
+    try {
+      device.updateParentPollingInterval(intervalMinutes)
+    } catch (Exception e) {
+      log "Error updating polling interval for vent ${device.getLabel()}: ${e.message}", 2
+    }
+  }
+  
+  // Update all child pucks  
+  getChildDevices()?.findAll { it.typeName == 'Flair pucks' }?.each { device ->
+    try {
+      device.updateParentPollingInterval(intervalMinutes)
+    } catch (Exception e) {
+      log "Error updating polling interval for puck ${device.getLabel()}: ${e.message}", 2
+    }
+  }
+  
+  atomicState.currentPollingInterval = intervalMinutes
+  log "Updated polling interval for ${getChildDevices()?.size() ?: 0} devices", 3
 }
 
 // ------------------------------

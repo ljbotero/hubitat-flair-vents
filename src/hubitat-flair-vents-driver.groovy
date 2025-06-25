@@ -1,5 +1,7 @@
 
 /**
+ *  Hubitat Flair Vents Driver
+ *  Version 0.21
  *
  *  Copyright 2024 Jaime Botero. All Rights Reserved
  *
@@ -151,4 +153,14 @@ def getDeviceState(String attr) {
 def setRoomActive(isActive) {
   logDebug("setRoomActive: ${isActive}")
   parent.patchRoom(device, isActive)
+}
+
+def updateParentPollingInterval(Integer intervalMinutes) {
+  logDebug("Parent requesting polling interval change to ${intervalMinutes} minutes")
+  
+  // Update the internal setting without user intervention
+  device.updateSetting('devicePoll', intervalMinutes)
+  
+  // Reschedule with new interval
+  setRefreshSchedule()
 }
