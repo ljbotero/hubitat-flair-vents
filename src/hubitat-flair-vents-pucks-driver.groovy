@@ -25,6 +25,7 @@ metadata {
         capability 'RelativeHumidityMeasurement'
         capability 'MotionSensor'
         capability 'Battery'
+        capability 'VoltageMeasurement'
         
         // Puck specific attributes
         attribute 'current-rssi', 'number'

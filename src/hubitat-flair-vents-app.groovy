@@ -1,6 +1,6 @@
 /**
  *  Hubitat Flair Vents Integration
- *  Version 0.22
+ *  Version 0.23
  *
  *  Copyright 2024 Jaime Botero. All Rights Reserved
  *
@@ -135,6 +135,7 @@ definition(
 
 preferences {
   page(name: 'mainPage')
+  page(name: 'efficiencyDataPage')
 }
 
 def mainPage() {
@@ -144,21 +145,26 @@ def mainPage() {
       input name: 'clientSecret', type: 'password', title: 'Client Secret OAuth 2.0', required: true, submitOnChange: true
       paragraph '<small><b>Obtain your client Id and secret from ' +
                 "<a href='https://forms.gle/VohiQjWNv9CAP2ASA' target='_blank'>here</a></b></small>"
+      
       if (settings?.clientId && settings?.clientSecret) {
-        // Auto-authenticate when credentials are provided
-        if (!state.flairAccessToken || state.authError) {
-          runIn(1, 'autoAuthenticate')
+        if (!state.flairAccessToken && !state.authInProgress) {
+          state.authInProgress = true
+          runIn(2, 'autoAuthenticate')
         }
+        
         if (state.flairAccessToken && !state.authError) {
           paragraph "<span style='color: green;'>✓ Authenticated successfully</span>"
+        } else if (state.authError && !state.authInProgress) {
+          section {
+            paragraph "<span style='color: red;'>${state.authError}</span>"
+            input name: 'retryAuth', type: 'button', title: 'Retry Authentication', submitOnChange: true
+            paragraph "<small>If authentication continues to fail, verify your credentials are correct and try again.</small>"
+          }
+        } else if (state.authInProgress) {
+          paragraph "<span style='color: orange;'>⏳ Authenticating... Please wait.</span>"
+          paragraph "<small>This may take 10-15 seconds. The page will refresh automatically when complete.</small>"
         } else {
-          paragraph "<span style='color: orange;'>Authenticating...</span>"
-        }
-      }
-      if (state.authError) {
-        section {
-          paragraph "<span style='color: red;'>${state.authError}</span>"
-          input name: 'retryAuth', type: 'button', title: 'Retry Authentication', submitOnChange: true
+          paragraph "<span style='color: orange;'>Ready to authenticate...</span>"
         }
       }
     }
@@ -191,6 +197,23 @@ def mainPage() {
           if (!getThermostat1Mode() || getThermostat1Mode() == 'auto') {
             patchStructureData([mode: 'manual'])
             atomicState?.putAt('thermostat1Mode', 'manual')
+          }
+          
+          // Efficiency Data Management Link
+          section {
+            href name: 'efficiencyDataLink', title: '🔄 Backup & Restore Efficiency Data', 
+                 description: 'Save your learned room efficiency data to restore after app updates', 
+                 page: 'efficiencyDataPage'
+            
+            // Show current status summary
+            def vents = getChildDevices().findAll { it.hasAttribute('percent-open') }
+            if (vents.size() > 0) {
+              def roomsWithData = vents.findAll { 
+                (it.currentValue('room-cooling-rate') ?: 0) > 0 || 
+                (it.currentValue('room-heating-rate') ?: 0) > 0 
+              }
+              paragraph "<small><b>Current Status:</b> ${roomsWithData.size()} of ${vents.size()} rooms have learned efficiency data</small>"
+            }
           }
         }
         // Only show vents in DAB section, not pucks
@@ -313,6 +336,9 @@ def initialize() {
   // Initialize instance-based caches
   initializeInstanceCaches()
   
+  // Clean up any existing BigDecimal precision issues
+  cleanupExistingDecimalPrecision()
+  
   // Check if we need to auto-authenticate on startup
   if (settings?.clientId && settings?.clientSecret) {
     if (!state.flairAccessToken) {
@@ -415,6 +441,53 @@ def roundBigDecimal(BigDecimal number, int scale = 3) {
   number.setScale(scale, BigDecimal.ROUND_HALF_UP)
 }
 
+// Function to round values to specific decimal places for JSON export
+def roundToDecimalPlaces(def value, int decimalPlaces) {
+  if (value == null || value == 0) return 0
+  
+  try {
+    // Convert to double
+    def doubleValue = value as Double
+    
+    // Use basic math to round to decimal places - this definitely works in Hubitat
+    def multiplier = Math.pow(10, decimalPlaces)
+    def rounded = Math.round(doubleValue * multiplier) / multiplier
+    
+    // Return as Double to ensure proper JSON serialization
+    return rounded as Double
+  } catch (Exception e) {
+    log "Error rounding value ${value}: ${e.message}", 2
+    return 0
+  }
+}
+
+// Function to clean decimal values for JSON serialization
+// Enhanced version to handle Hubitat's BigDecimal precision issues
+def cleanDecimalForJson(def value) {
+  if (value == null || value == 0) return 0
+  
+  try {
+    // Convert to String first to break BigDecimal precision chain
+    def stringValue = value.toString()
+    def doubleValue = Double.parseDouble(stringValue)
+    
+    // Handle edge cases
+    if (!Double.isFinite(doubleValue)) {
+      return 0.0d
+    }
+    
+    // Apply aggressive rounding to exactly 10 decimal places
+    def multiplier = 1000000000.0d  // 10^9 for 10 decimal places
+    def rounded = Math.round(doubleValue * multiplier) / multiplier
+    
+    // Ensure we return a clean Double, not BigDecimal
+    return Double.valueOf(rounded)
+  } catch (Exception e) {
+    log "Error cleaning decimal for JSON: ${e.message}", 2
+    return 0.0d
+  }
+}
+
 // Modified rounding function that uses the user-configured granularity.
 // It has been renamed to roundToNearestMultiple since it rounds a value to the nearest multiple of a given granularity.
 int roundToNearestMultiple(BigDecimal num) {
@@ -486,6 +559,64 @@ private safeSendEvent(device, Map eventData) {
   } catch (Exception e) {
     // In test environment, sendEvent might not be available
     log "Warning: Could not send event ${eventData} to device ${device}: ${e.message}", 2
+  }
+}
+
+// Clean up existing BigDecimal precision issues in stored data
+def cleanupExistingDecimalPrecision() {
+  try {
+    log "Cleaning up existing decimal precision issues", 2
+    
+    // Clean up global rates in atomicState
+    if (atomicState.maxCoolingRate) {
+      def cleanedCooling = cleanDecimalForJson(atomicState.maxCoolingRate)
+      if (cleanedCooling != atomicState.maxCoolingRate) {
+        atomicState.maxCoolingRate = cleanedCooling
+        log "Cleaned maxCoolingRate: ${atomicState.maxCoolingRate}", 2
+      }
+    }
+    
+    if (atomicState.maxHeatingRate) {
+      def cleanedHeating = cleanDecimalForJson(atomicState.maxHeatingRate)
+      if (cleanedHeating != atomicState.maxHeatingRate) {
+        atomicState.maxHeatingRate = cleanedHeating
+        log "Cleaned maxHeatingRate: ${atomicState.maxHeatingRate}", 2
+      }
+    }
+    
+    // Clean up device attributes for existing vents
+    def devicesUpdated = 0
+    getChildDevices().findAll { it.hasAttribute('percent-open') }.each { device ->
+      try {
+        def coolingRate = device.currentValue('room-cooling-rate')
+        def heatingRate = device.currentValue('room-heating-rate')
+        
+        if (coolingRate && coolingRate != 0) {
+          def cleanedCooling = cleanDecimalForJson(coolingRate)
+          if (cleanedCooling != coolingRate) {
+            sendEvent(device, [name: 'room-cooling-rate', value: cleanedCooling])
+            devicesUpdated++
+          }
+        }
+        
+        if (heatingRate && heatingRate != 0) {
+          def cleanedHeating = cleanDecimalForJson(heatingRate)
+          if (cleanedHeating != heatingRate) {
+            sendEvent(device, [name: 'room-heating-rate', value: cleanedHeating])
+            devicesUpdated++
+          }
+        }
+      } catch (Exception e) {
+        log "Error cleaning device precision for ${device.getLabel()}: ${e.message}", 2
+      }
+    }
+    
+    if (devicesUpdated > 0) {
+      log "Updated decimal precision for ${devicesUpdated} device attributes", 2
+    }
+    
+  } catch (Exception e) {
+    log "Error during decimal precision cleanup: ${e.message}", 2
   }
 }
 
@@ -970,34 +1101,76 @@ def login() {
 }
 
 def authenticate() {
-  log 'Getting access_token from Flair', 2
+  log 'Getting access_token from Flair using async method', 2
+  state.authInProgress = true
+  
   def uri = "${BASE_URL}/oauth2/token"
   def body = "client_id=${settings?.clientId}&client_secret=${settings?.clientSecret}" +
     '&scope=vents.view+vents.edit+structures.view+structures.edit+pucks.view+pucks.edit&grant_type=client_credentials'
-  def params = [uri: uri, body: body, timeout: HTTP_TIMEOUT_SECS]
+  
+  def params = [
+    uri: uri, 
+    body: body, 
+    timeout: HTTP_TIMEOUT_SECS,
+    contentType: 'application/x-www-form-urlencoded'
+  ]
+  
   try {
-    httpPost(params) { response -> handleAuthResponse(response) }
-    state.remove('authError')
-  } catch (groovyx.net.http.HttpResponseException e) {
-    def err = "Login failed - ${e.getLocalizedMessage()}: ${e.response.data}"
+    asynchttpPost('handleAuthResponse', params)
+  } catch (Exception e) {
+    def err = "Authentication request failed: ${e.message}"
     logError err
     state.authError = err
+    state.authInProgress = false
     return err
   }
   return ''
 }
 
 def handleAuthResponse(resp) {
-  def respJson = resp.getData()
-  if (respJson?.access_token) {
-    state.flairAccessToken = respJson.access_token
-    state.remove('authError')
-    log 'Authentication successful', 3
-  } else {
-    def errorDetails = respJson?.error_description ?: respJson?.error ?: 'Unknown error'
-    state.authError = "Authentication failed: ${errorDetails}. " +
-                      "If you're using OAuth 1.0 credentials, please ensure they are Legacy API credentials. " +
-                      "OAuth 2.0 credentials are recommended for better device discovery."
+  try {
+    state.authInProgress = false
+    
+    if (!resp) {
+      state.authError = "Authentication failed: No response from Flair API"
+      logError state.authError
+      return
+    }
+    
+    if (resp.hasError()) {
+      def status = resp.getStatus()
+      def errorMsg = "Authentication failed with HTTP ${status}"
+      if (status == 401) {
+        errorMsg += ": Invalid credentials. Please verify your Client ID and Client Secret."
+      } else if (status == 403) {
+        errorMsg += ": Access forbidden. Please verify your OAuth credentials have proper permissions."
+      } else if (status == 429) {
+        errorMsg += ": Rate limited. Please wait a few minutes and try again."
+      } else {
+        errorMsg += ": ${resp.getErrorMessage() ?: 'Unknown error'}"
+      }
+      state.authError = errorMsg
+      logError state.authError
+      return
+    }
+    
+    def respJson = resp.getData()
+    if (respJson?.access_token) {
+      state.flairAccessToken = respJson.access_token
+      state.remove('authError')
+      log 'Authentication successful', 2
+      
+      // Call getStructureData async after successful auth
+      runIn(2, 'getStructureDataAsync')
+    } else {
+      def errorDetails = respJson?.error_description ?: respJson?.error ?: 'Unknown error'
+      state.authError = "Authentication failed: ${errorDetails}. " +
+                        "Please verify your OAuth 2.0 credentials are correct."
+      logError state.authError
+    }
+  } catch (Exception e) {
+    state.authInProgress = false
+    state.authError = "Authentication processing failed: ${e.message}"
     logError state.authError
   }
 }
@@ -1016,6 +1189,15 @@ def appButtonHandler(String btn) {
       break
     case 'discoverDevices':
       discover()
+      break
+    case 'exportEfficiencyData':
+      handleExportEfficiencyData()
+      break
+    case 'importEfficiencyData':
+      handleImportEfficiencyData()
+      break
+    case 'clearExportData':
+      handleClearExportData()
       break
   }
 }
@@ -1667,7 +1849,9 @@ def handlePuckReadingGet(resp, data) {
     }
     if (reading.attributes?.'system-voltage' != null) {
       try {
-        def voltage = reading.attributes['system-voltage'] as BigDecimal
+        def voltage = reading.attributes['system-voltage']
+        // Map system-voltage to voltage attribute for Rule Machine compatibility
+        sendEvent(data.device, [name: 'voltage', value: voltage, unit: 'V'])
         def battery = ((voltage - 2.0) / 1.6) * 100
         battery = Math.max(0, Math.min(100, battery.round() as int))
         sendEvent(data.device, [name: 'battery', value: battery, unit: '%'])
@@ -1728,6 +1912,12 @@ def processVentTraits(device, details) {
    'percent-open', 'duct-temperature-c', 'motor-run-time', 'system-voltage', 'motor-current',
    'has-buzzed', 'updated-at', 'inactive'].each { attr ->
       traitExtract(device, details, attr, attr == 'percent-open' ? 'level' : attr, attr == 'percent-open' ? '%' : null)
+   }
+   
+   // Map system-voltage to voltage attribute for Rule Machine compatibility
+   if (details?.data?.attributes?.'system-voltage' != null) {
+     def voltage = details.data.attributes['system-voltage']
+     sendEvent(device, [name: 'voltage', value: voltage, unit: 'V'])
    }
 }
 
@@ -1810,6 +2000,47 @@ def patchStructureData(Map attributes) {
   def body = [data: [type: 'structures', attributes: attributes]]
   def uri = "${BASE_URL}/api/structures/${getStructureId()}"
   patchDataAsync(uri, null, body)
+}
+
+def getStructureDataAsync() {
+  log 'Getting structure data asynchronously', 2
+  def uri = "${BASE_URL}/api/structures"
+  def headers = [ Authorization: "Bearer ${state.flairAccessToken}" ]
+  def httpParams = [ 
+    uri: uri, 
+    headers: headers, 
+    contentType: CONTENT_TYPE, 
+    timeout: HTTP_TIMEOUT_SECS 
+  ]
+  
+  try {
+    asynchttpGet('handleStructureResponse', httpParams)
+  } catch (Exception e) {
+    logError "Structure data request failed: ${e.message}"
+  }
+}
+
+def handleStructureResponse(resp, data) {
+  try {
+    if (!isValidResponse(resp)) { 
+      logError "Structure data request failed"
+      return 
+    }
+    
+    def response = resp.getJson()
+    if (!response?.data?.first()) {
+      logError 'No structure data available'
+      return
+    }
+    
+    def myStruct = response.data.first()
+    if (myStruct?.id) {
+      app.updateSetting('structureId', myStruct.id)
+      log "Structure loaded: id=${myStruct.id}, name=${myStruct.attributes?.name}", 2
+    }
+  } catch (Exception e) {
+    logError "Structure data processing failed: ${e.message}"
+  }
 }
 
 def getStructureData() {
@@ -2112,25 +2343,26 @@ def finalizeRoomStates(data) {
         }
         
         def rate = rollingAverage(currentRate, newRate, percentOpen / 100, 4)
-        sendEvent(vent, [name: ratePropName, value: rate])
-        log "Updating ${roomName}'s ${ratePropName} to ${roundBigDecimal(rate)}", 3
+        def cleanedRate = cleanDecimalForJson(rate)
+        sendEvent(vent, [name: ratePropName, value: cleanedRate])
+        log "Updating ${roomName}'s ${ratePropName} to ${roundBigDecimal(cleanedRate)}", 3
         
         // Store the calculated rate for this room
-        roomRates[roomName] = rate
+        roomRates[roomName] = cleanedRate
         
         // Track maximum rates for baseline calculations
-        if (rate > 0) {
+        if (cleanedRate > 0) {
           if (data.hvacMode == COOLING) {
             def maxCoolRate = atomicState.maxCoolingRate ?: 0
-            if (rate > maxCoolRate) {
-              atomicState.maxCoolingRate = rate
-              log "Updated maximum cooling rate to ${rate}", 3
+            if (cleanedRate > maxCoolRate) {
+              atomicState.maxCoolingRate = cleanDecimalForJson(cleanedRate)
+              log "Updated maximum cooling rate to ${cleanedRate}", 3
             }
           } else if (data.hvacMode == HEATING) {
             def maxHeatRate = atomicState.maxHeatingRate ?: 0
-            if (rate > maxHeatRate) {
-              atomicState.maxHeatingRate = rate
-              log "Updated maximum heating rate to ${rate}", 3
+            if (cleanedRate > maxHeatRate) {
+              atomicState.maxHeatingRate = cleanDecimalForJson(cleanedRate)
+              log "Updated maximum heating rate to ${cleanedRate}", 3
             }
           }
         }
@@ -2468,6 +2700,368 @@ def updateDevicePollingInterval(Integer intervalMinutes) {
   
   atomicState.currentPollingInterval = intervalMinutes
   log "Updated polling interval for ${getChildDevices()?.size() ?: 0} devices", 3
+}
+
+// ------------------------------
+// Efficiency Data Export/Import Functions
+// ------------------------------
+
+def handleExportEfficiencyData() {
+  try {
+    log "Starting efficiency data export", 2
+    
+    // Collect efficiency data from all vents
+    def efficiencyData = exportEfficiencyData()
+    
+    // Generate JSON format
+    def jsonData = generateEfficiencyJSON(efficiencyData)
+    
+    // Set export status message
+    def roomCount = efficiencyData.roomEfficiencies.size()
+    state.exportStatus = "✓ Exported efficiency data for ${roomCount} rooms. Copy the JSON data below:"
+    
+    // Store the JSON data for display
+    state.exportedJsonData = jsonData
+    
+    log "Export completed successfully for ${roomCount} rooms", 2
+    
+  } catch (Exception e) {
+    def errorMsg = "Export failed: ${e.message}"
+    logError errorMsg
+    state.exportStatus = "✗ ${errorMsg}"
+    state.exportedJsonData = null
+  }
+}
+
+def handleImportEfficiencyData() {
+  try {
+    log "Starting efficiency data import", 2
+    
+    // Clear previous status
+    state.remove('importStatus')
+    state.remove('importSuccess')
+    
+    // Get JSON data from user input
+    def jsonData = settings.importJsonData
+    if (!jsonData?.trim()) {
+      state.importStatus = "✗ No JSON data provided. Please paste the exported efficiency data."
+      state.importSuccess = false
+      return
+    }
+    
+    // Import the data
+    def result = importEfficiencyData(jsonData.trim())
+    
+    if (result.success) {
+      def statusMsg = "✓ Import successful! Updated ${result.roomsUpdated} rooms"
+      if (result.globalUpdated) {
+        statusMsg += " and global efficiency rates"
+      }
+      if (result.roomsSkipped > 0) {
+        statusMsg += ". Skipped ${result.roomsSkipped} rooms (not found)"
+      }
+      
+      state.importStatus = statusMsg
+      state.importSuccess = true
+      
+      // Clear the input field after successful import
+      app.updateSetting('importJsonData', '')
+      
+      log "Import completed: ${result.roomsUpdated} rooms updated, ${result.roomsSkipped} skipped", 2
+      
+    } else {
+      state.importStatus = "✗ Import failed: ${result.error}"
+      state.importSuccess = false
+      logError "Import failed: ${result.error}"
+    }
+    
+  } catch (Exception e) {
+    def errorMsg = "Import failed: ${e.message}"
+    logError errorMsg
+    state.importStatus = "✗ ${errorMsg}"
+    state.importSuccess = false
+  }
+}
+
+def handleClearExportData() {
+  try {
+    log "Clearing export data", 2
+    state.remove('exportStatus')
+    state.remove('exportedJsonData')
+    log "Export data cleared successfully", 2
+  } catch (Exception e) {
+    logError "Failed to clear export data: ${e.message}"
+  }
+}
+
+def exportEfficiencyData() {
+  def data = [
+    globalRates: [
+      maxCoolingRate: cleanDecimalForJson(atomicState.maxCoolingRate),
+      maxHeatingRate: cleanDecimalForJson(atomicState.maxHeatingRate)
+    ],
+    roomEfficiencies: []
+  ]
+  
+  // Only collect from vents (devices with percent-open attribute)
+  getChildDevices().findAll { it.hasAttribute('percent-open') }.each { device ->
+    def coolingRate = device.currentValue('room-cooling-rate') ?: 0
+    def heatingRate = device.currentValue('room-heating-rate') ?: 0
+    
+    def roomData = [
+      roomId: device.currentValue('room-id'),
+      roomName: device.currentValue('room-name'),
+      ventId: device.getDeviceNetworkId(),
+      coolingRate: cleanDecimalForJson(coolingRate),
+      heatingRate: cleanDecimalForJson(heatingRate)
+    ]
+    data.roomEfficiencies << roomData
+  }
+  
+  return data
+}
+
+def generateEfficiencyJSON(data) {
+  def exportData = [
+    exportMetadata: [
+      version: '0.23',
+      exportDate: new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'"),
+      structureId: settings.structureId ?: 'Unknown'
+    ],
+    efficiencyData: data
+  ]
+  return JsonOutput.toJson(exportData)
+}
+
+def importEfficiencyData(jsonContent) {
+  try {
+    def jsonData = new groovy.json.JsonSlurper().parseText(jsonContent)
+    
+    if (!validateImportData(jsonData)) {
+      return [success: false, error: 'Invalid data format. Please ensure you are using exported efficiency data.']
+    }
+    
+    def results = applyImportedEfficiencies(jsonData.efficiencyData)
+    
+    return [
+      success: true,
+      globalUpdated: results.globalUpdated,
+      roomsUpdated: results.roomsUpdated,
+      roomsSkipped: results.roomsSkipped,
+      errors: results.errors
+    ]
+  } catch (Exception e) {
+    return [success: false, error: e.message]
+  }
+}
+
+def validateImportData(jsonData) {
+  // Check required structure
+  if (!jsonData.exportMetadata || !jsonData.efficiencyData) return false
+  if (!jsonData.efficiencyData.globalRates) return false
+  if (!jsonData.efficiencyData.roomEfficiencies) return false
+  
+  // Validate global rates
+  def globalRates = jsonData.efficiencyData.globalRates
+  if (globalRates.maxCoolingRate == null || globalRates.maxHeatingRate == null) return false
+  if (globalRates.maxCoolingRate < 0 || globalRates.maxHeatingRate < 0) return false
+  if (globalRates.maxCoolingRate > 10 || globalRates.maxHeatingRate > 10) return false
+  
+  // Validate room efficiencies
+  for (room in jsonData.efficiencyData.roomEfficiencies) {
+    if (!room.roomId || !room.roomName || !room.ventId) return false
+    if (room.coolingRate == null || room.heatingRate == null) return false
+    if (room.coolingRate < 0 || room.heatingRate < 0) return false
+    if (room.coolingRate > 10 || room.heatingRate > 10) return false
+  }
+  
+  return true
+}
+
+def applyImportedEfficiencies(efficiencyData) {
+  def results = [
+    globalUpdated: false,
+    roomsUpdated: 0,
+    roomsSkipped: 0,
+    errors: []
+  ]
+  
+  // Update global rates
+  if (efficiencyData.globalRates) {
+    atomicState.maxCoolingRate = efficiencyData.globalRates.maxCoolingRate
+    atomicState.maxHeatingRate = efficiencyData.globalRates.maxHeatingRate
+    results.globalUpdated = true
+    log "Updated global rates: cooling=${efficiencyData.globalRates.maxCoolingRate}, heating=${efficiencyData.globalRates.maxHeatingRate}", 2
+  }
+  
+  // Update room efficiencies
+  efficiencyData.roomEfficiencies?.each { roomData ->
+    def device = matchDeviceByRoomId(roomData.roomId) ?: matchDeviceByRoomName(roomData.roomName)
+    
+    if (device) {
+      sendEvent(device, [name: 'room-cooling-rate', value: roomData.coolingRate])
+      sendEvent(device, [name: 'room-heating-rate', value: roomData.heatingRate])
+      results.roomsUpdated++
+      log "Updated efficiency for '${roomData.roomName}': cooling=${roomData.coolingRate}, heating=${roomData.heatingRate}", 2
+    } else {
+      results.roomsSkipped++
+      results.errors << "Room not found: ${roomData.roomName} (${roomData.roomId})"
+      log "Skipped room '${roomData.roomName}' - no matching device found", 2
+    }
+  }
+  
+  return results
+}
+
+def matchDeviceByRoomId(roomId) {
+  return getChildDevices().find { device ->
+    device.hasAttribute('percent-open') && device.currentValue('room-id') == roomId
+  }
+}
+
+def matchDeviceByRoomName(roomName) {
+  return getChildDevices().find { device ->
+    device.hasAttribute('percent-open') && device.currentValue('room-name') == roomName
+  }
+}
+
+def efficiencyDataPage() {
+  // Auto-generate export data on page load
+  def vents = getChildDevices().findAll { it.hasAttribute('percent-open') }
+  def roomsWithData = vents.findAll { 
+    (it.currentValue('room-cooling-rate') ?: 0) > 0 || 
+    (it.currentValue('room-heating-rate') ?: 0) > 0 
+  }
+  
+  // Automatically generate JSON data when page loads
+  def exportJsonData = ""
+  if (roomsWithData.size() > 0) {
+    try {
+      def efficiencyData = exportEfficiencyData()
+      exportJsonData = generateEfficiencyJSON(efficiencyData)
+    } catch (Exception e) {
+      log "Error generating export data: ${e.message}", 2
+    }
+  }
+  
+  dynamicPage(name: 'efficiencyDataPage', title: '🔄 Backup & Restore Efficiency Data', install: false, uninstall: false) {
+    section {
+      paragraph '''
+        <div style="background-color: #f0f8ff; padding: 15px; border-left: 4px solid #007bff; margin-bottom: 20px;">
+          <h3 style="margin-top: 0; color: #0056b3;">📚 What is this?</h3>
+          <p style="margin-bottom: 0;">Your Flair vents learn how efficiently each room heats and cools over time. This data helps the system optimize energy usage. 
+          Use this page to backup your data before app updates or restore it after system resets.</p>
+        </div>
+      '''
+    }
+    
+    // Show current status
+    if (vents.size() > 0) {
+      section("📊 Current Status") {
+        if (roomsWithData.size() > 0) {
+          paragraph "<div style='color: green; font-weight: bold;'>✓ Your system has learned efficiency data for ${roomsWithData.size()} out of ${vents.size()} rooms</div>"
+        } else {
+          paragraph "<div style='color: orange; font-weight: bold;'>⚠ Your system is still learning (${vents.size()} rooms found, but no efficiency data yet)</div>"
+          paragraph "<small>Let your system run for a few heating/cooling cycles before backing up data.</small>"
+        }
+      }
+    }
+    
+    // Export Section - Auto-generated
+    if (roomsWithData.size() > 0 && exportJsonData) {
+      section("💾 Save Your Data (Backup)") {
+        // Create base64 encoded download link with current date
+        def currentDate = new Date().format("yyyy-MM-dd")
+        def fileName = "Flair-Backup-${currentDate}.json"
+        def base64Data = exportJsonData.bytes.encodeBase64().toString()
+        def downloadUrl = "data:application/json;charset=utf-8;base64,${base64Data}"
+        
+        paragraph "Your backup data is ready:"
+        
+        paragraph "<a href=\"${downloadUrl}\" download=\"${fileName}\">📥 Download ${fileName}</a>"
+      }
+    } else if (vents.size() > 0) {
+      section("💾 Save Your Data (Backup)") {
+        paragraph "System is still learning. Check back after a few heating/cooling cycles."
+      }
+    }
+    
+    // Import Section
+    section("📥 Step 2: Restore Your Data (Import)") {
+      paragraph '''
+        <p><strong>When should I do this?</strong></p>
+        <p>• After reinstalling this app<br>
+        • After resetting your Hubitat hub<br>
+        • After replacing hardware</p>
+      '''
+      
+      paragraph '''
+        <p><strong>How to restore your data:</strong></p>
+        <p>1. Find your saved backup JSON file (e.g., "Flair-Backup-2025-06-26.json")<br>
+        2. Open the JSON file in Notepad/TextEdit<br>
+        3. Select all text (Ctrl+A) and copy (Ctrl+C)<br>
+        4. Paste it in the box below (Ctrl+V)<br>
+        5. Click "Restore My Data"</p>
+        
+        <p><small><strong>Note:</strong> Hubitat doesn't support file uploads, so we need to copy/paste the JSON content.</small></p>
+      '''
+      
+      input name: 'importJsonData', type: 'textarea', title: 'Paste JSON Backup Data', 
+            description: 'Open your backup JSON file and paste ALL the content here',
+            required: false, rows: 8
+      
+      input name: 'importEfficiencyData', type: 'button', title: 'Restore My Data', 
+            submitOnChange: true, width: 4
+      
+      if (state.importStatus) {
+        def statusColor = state.importSuccess ? 'green' : 'red'
+        def statusIcon = state.importSuccess ? '✓' : '✗'
+        paragraph "<div style='color: ${statusColor}; font-weight: bold; margin-top: 15px; padding: 10px; background-color: ${state.importSuccess ? '#e8f5e8' : '#ffe8e8'}; border-radius: 5px;'>${statusIcon} ${state.importStatus}</div>"
+        
+        if (state.importSuccess) {
+          paragraph '''
+            <div style="background-color: #e8f5e8; padding: 15px; border-radius: 5px; margin-top: 10px;">
+              <h4 style="margin-top: 0; color: #2d5a2d;">🎉 Success! What happens now?</h4>
+              <p>Your room learning data has been restored. Your Flair vents will now use the saved efficiency information to:</p>
+              <ul>
+                <li>Optimize airflow to each room</li>
+                <li>Reduce energy usage</li>
+                <li>Maintain comfortable temperatures</li>
+              </ul>
+              <p style="margin-bottom: 0;"><strong>You're all set!</strong> The system will continue learning and improving from this restored baseline.</p>
+            </div>
+          '''
+        }
+      }
+    }
+    
+    // Help & Tips Section
+    section("❓ Need Help?") {
+      paragraph '''
+        <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px;">
+          <h4 style="margin-top: 0;">💡 Tips for Success</h4>
+          <ul style="margin-bottom: 10px;">
+            <li><strong>Regular Backups:</strong> Save your data monthly or before any system changes</li>
+            <li><strong>File Naming:</strong> Include the date in your backup filename (e.g., "Flair-Backup-2025-06-26")</li>
+            <li><strong>Multiple Copies:</strong> Store backups in multiple places (email, cloud storage, USB drive)</li>
+            <li><strong>When to Restore:</strong> Only restore data when setting up a new system or after data loss</li>
+          </ul>
+          
+          <h4>🚨 Troubleshooting</h4>
+          <ul style="margin-bottom: 0;">
+            <li><strong>Import Failed:</strong> Make sure you copied ALL the text from your backup file</li>
+            <li><strong>No Data to Export:</strong> Let your system run for a few heating/cooling cycles first</li>
+            <li><strong>Room Not Found:</strong> Room names may have changed - the system will skip those rooms</li>
+            <li><strong>Still Need Help:</strong> Check the Hubitat community forums or contact support</li>
+          </ul>
+        </div>
+      '''
+    }
+    
+    section {
+      href name: 'backToMain', title: '← Back to Main Settings', description: 'Return to the main app configuration', page: 'mainPage'
+    }
+  }
 }
 
 // ------------------------------

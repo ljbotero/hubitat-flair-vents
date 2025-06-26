@@ -2,6 +2,74 @@
 
 All notable changes to the Hubitat Flair Vents integration will be documented in this file.
 
+## [0.23] - 2025-06-26
+
+### Major Backup & Restore System with Comprehensive Edge Case Handling
+
+#### Added
+- **Complete Efficiency Data Backup/Restore System**: Full-featured backup and restore functionality for learned room efficiency data
+  - Automatic JSON export generation with metadata (version, timestamp, structure ID)
+  - User-friendly import/export interface with step-by-step guidance
+  - Download links for backup files with automatic date naming
+  - Real-time status feedback for all operations
+  - Comprehensive validation of import data format and ranges
+
+- **Robust Edge Case Handling**: Enterprise-level error handling for all backup/restore scenarios
+  - **Missing Rooms**: Gracefully handles rooms that no longer exist in the system
+  - **Dual Matching Strategy**: Matches rooms by ID first, falls back to name matching if IDs changed
+  - **Partial Import Success**: Continues processing even when some rooms can't be found
+  - **Data Validation**: Validates JSON structure, required fields, and value ranges before import
+  - **Malformed Data Protection**: Handles invalid JSON, missing sections, out-of-range values
+  - **Zero Efficiency Support**: Properly handles and preserves zero efficiency values as valid data
+  - **Empty Data Sets**: Handles empty room arrays and missing efficiency data gracefully
+  - **System State Compatibility**: Works even when no devices exist in current system
+
+- **Enhanced Data Integrity**: Advanced decimal precision handling for backup/restore operations
+  - New `cleanDecimalForJson()` function eliminates BigDecimal precision artifacts
+  - Aggressive rounding to 10 decimal places prevents JSON serialization issues
+  - Automatic cleanup of existing precision problems in stored data
+  - Clean Double type conversion ensures proper JSON export/import
+
+- **User Experience Improvements**: Intuitive interface with comprehensive help and guidance
+  - Auto-generated backup data on page load for immediate download
+  - Clear status indicators showing current system learning progress
+  - Step-by-step instructions for backup and restore procedures
+  - Comprehensive troubleshooting guide and tips section
+  - Automatic input field clearing after successful imports
+  - Detailed success/error messages with specific counts and actions taken
+
+#### Technical Details
+- **New Methods**: 
+  - `exportEfficiencyData()` - Collects and formats efficiency data for export
+  - `generateEfficiencyJSON()` - Creates structured JSON with metadata
+  - `importEfficiencyData()` - Processes and validates imported data
+  - `validateImportData()` - Comprehensive validation of import format and ranges
+  - `applyImportedEfficiencies()` - Safely applies imported data to devices
+  - `matchDeviceByRoomId()` and `matchDeviceByRoomName()` - Dual matching strategy
+  - `cleanDecimalForJson()` - Enhanced decimal precision handling for JSON export
+  - `cleanupExistingDecimalPrecision()` - Cleanup of legacy precision issues
+
+- **Comprehensive Test Coverage**: 22 passing tests covering all edge cases
+  - Successful imports with all rooms found
+  - Partial imports with missing rooms
+  - Room ID/name change scenarios
+  - Invalid JSON structure handling
+  - Out-of-range value validation
+  - Empty data set processing
+  - Export-import roundtrip integrity
+  - System state compatibility testing
+
+- **Data Format**: Structured JSON export with metadata including version, timestamp, and structure ID
+- **Version Tracking**: Export format version 0.23 for compatibility tracking
+- **Safety Features**: All operations validate data integrity before making changes
+
+#### User Benefits
+- **Zero Data Loss**: Never lose learned room efficiency data during app updates or system resets
+- **Reliable Migrations**: Seamlessly transfer data between systems or after hardware replacement
+- **Robust Recovery**: System continues working even with partial data corruption or missing rooms
+- **Future-Proof**: Version-tracked export format ensures compatibility with future updates
+- **User-Friendly**: Simple backup and restore process with clear guidance and feedback
+
 ## [0.21] - 2025-06-24
 
 ### Major Performance and Stability Improvements
