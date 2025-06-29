@@ -1,6 +1,6 @@
 /**
  *  Hubitat Flair Vents Integration
- *  Version 0.23
+ *  Version 0.232
  *
  *  Copyright 2024 Jaime Botero. All Rights Reserved
  *
@@ -149,6 +149,7 @@ def mainPage() {
       if (settings?.clientId && settings?.clientSecret) {
         if (!state.flairAccessToken && !state.authInProgress) {
           state.authInProgress = true
+          state.remove('authError')  // Clear any previous error when starting new auth
           runIn(2, 'autoAuthenticate')
         }
         
@@ -1103,6 +1104,7 @@ def login() {
 def authenticate() {
   log 'Getting access_token from Flair using async method', 2
   state.authInProgress = true
+  state.remove('authError')  // Clear any previous error state
   
   def uri = "${BASE_URL}/oauth2/token"
   def body = "client_id=${settings?.clientId}&client_secret=${settings?.clientSecret}" +
@@ -1116,7 +1118,7 @@ def authenticate() {
   ]
   
   try {
-    asynchttpPost('handleAuthResponse', params)
+    asynchttpPost(handleAuthResponse, params)
   } catch (Exception e) {
     def err = "Authentication request failed: ${e.message}"
     logError err
@@ -1127,8 +1129,9 @@ def authenticate() {
   return ''
 }
 
-def handleAuthResponse(resp) {
+def handleAuthResponse(resp, data) {
   try {
+    log "handleAuthResponse called with resp status: ${resp?.getStatus()}", 2
     state.authInProgress = false
     
     if (!resp) {
@@ -1154,7 +1157,8 @@ def handleAuthResponse(resp) {
       return
     }
     
-    def respJson = resp.getData()
+    def respJson = resp.getJson()
+    
     if (respJson?.access_token) {
       state.flairAccessToken = respJson.access_token
       state.remove('authError')
@@ -1163,7 +1167,7 @@ def handleAuthResponse(resp) {
       // Call getStructureData async after successful auth
       runIn(2, 'getStructureDataAsync')
     } else {
-      def errorDetails = respJson?.error_description ?: respJson?.error ?: 'Unknown error'
+      def errorDetails = respJson?.error_description ?: respJson?.error ?: 'No access token in response'
       state.authError = "Authentication failed: ${errorDetails}. " +
                         "Please verify your OAuth 2.0 credentials are correct."
       logError state.authError
@@ -1171,7 +1175,8 @@ def handleAuthResponse(resp) {
   } catch (Exception e) {
     state.authInProgress = false
     state.authError = "Authentication processing failed: ${e.message}"
-    logError state.authError
+    logError "handleAuthResponse exception: ${e.message}"
+    log "Exception stack trace: ${e.getStackTrace()}", 1
   }
 }
 
@@ -1832,6 +1837,7 @@ def handlePuckGetWithCache(resp, data) {
   }
 }
 
+
 def handlePuckReadingGet(resp, data) {
   if (!isValidResponse(resp) || !data?.device) { return }
   def respJson = resp.getJson()
@@ -2014,7 +2020,7 @@ def getStructureDataAsync() {
   ]
   
   try {
-    asynchttpGet('handleStructureResponse', httpParams)
+    asynchttpGet(handleStructureResponse, httpParams)
   } catch (Exception e) {
     logError "Structure data request failed: ${e.message}"
   }

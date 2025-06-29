@@ -2,6 +2,59 @@
 
 All notable changes to the Hubitat Flair Vents integration will be documented in this file.
 
+## [0.232] - 2025-06-29
+
+### Fixed
+- **Authentication JSON Parsing Error**: Fixed critical authentication issue causing hourly error logs with "No such property: access_token for class: java.lang.String"
+  - Root cause: `handleAuthResponse` method was using `resp.getData()` which returns raw String data
+  - Solution: Changed to `resp.getJson()` which returns properly parsed JSON object with accessible properties
+  - Impact: Eliminated recurring authentication processing errors and restored proper OAuth token handling
+  - Affected method: `handleAuthResponse()` line 1094 in main app
+
+### Changed
+- **Version Synchronization**: Updated version numbers across all components to maintain consistency
+  - App: `hubitat-flair-vents-app.groovy` → 0.232
+  - Vents Driver: `hubitat-flair-vents-driver.groovy` → 0.232  
+  - Pucks Driver: `hubitat-flair-vents-pucks-driver.groovy` → 0.232
+
+### Technical Details
+- Fixed JSON response parsing in OAuth authentication flow
+- Ensures proper access to `access_token` property from Flair API response
+- Maintains backward compatibility with existing authentication system
+- No user-facing changes required - fix is transparent to end users
+
+### User Benefits
+- **Eliminated Authentication Errors**: No more hourly "access_token" property errors in logs
+- **Restored Token Processing**: OAuth token refresh now works properly again
+- **Cleaner Error Logs**: Reduced authentication-related log noise for better debugging
+- **Stable API Access**: Consistent authentication state for reliable Flair API communication
+
+## [0.231] - 2025-06-29
+
+### Fixed
+- **Authentication Callback Signature Error**: Fixed critical issue causing hourly error logs with "No signature of method: java.lang.String.call()" 
+  - Root cause: `handleAuthResponse` callback was being called with incorrect signature parameters
+  - Solution: Updated callback signature to properly handle `hubitat.scheduling.AsyncResponse` and `data` parameters
+  - Impact: Eliminated recurring authentication errors and stabilized OAuth token refresh process
+  - Affected methods: `handleAuthResponse()`, `authenticate()`, `asynchttpPost()` calls
+
+### Changed
+- **Version Synchronization**: Updated version numbers across all components to maintain consistency
+  - App: `hubitat-flair-vents-app.groovy` → 0.231
+  - Vents Driver: `hubitat-flair-vents-driver.groovy` → 0.231  
+  - Pucks Driver: `hubitat-flair-vents-pucks-driver.groovy` → 0.231
+
+### Technical Details
+- Fixed async HTTP callback signature to match Hubitat's expected pattern: `(AsyncResponse resp, Map data)`
+- Ensures proper error handling and response processing in authentication flow
+- Maintains backward compatibility with existing OAuth authentication system
+- No user-facing changes required - fix is transparent to end users
+
+### User Benefits
+- **Eliminated Error Spam**: No more hourly authentication error messages in logs
+- **Improved Reliability**: More stable OAuth token refresh mechanism
+- **Cleaner Logs**: Reduced log noise for better debugging experience
+
 ## [0.23] - 2025-06-26
 
 ### Major Backup & Restore System with Comprehensive Edge Case Handling

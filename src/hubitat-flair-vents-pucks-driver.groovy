@@ -1,6 +1,6 @@
 /**
  *  Hubitat Flair Pucks Driver
- *  Version 0.22
+ *  Version 0.232
  *
  *  Copyright 2024 Jaime Botero. All Rights Reserved
  *
