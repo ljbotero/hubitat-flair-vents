@@ -1,6 +1,20 @@
 # Changelog
 
-All notable changes to the Hubitat Flair Vents integration will be documented in this file.
+All notable changes to this project will be documented in this file.
+
+## [0.233] - 2025-06-30
+
+### Fixed
+- **Critical Null Safety**: Added comprehensive null safety with safe navigation operators (`?.`) throughout the codebase to prevent null pointer exceptions
+- **Thermostat Access**: Fixed null pointer exceptions when accessing thermostat properties in getRoomTemp and getThermostatSetpoint methods
+- **HTTP Response Handling**: Protected all JSON parsing operations with safe navigation operators
+- **Device Attribute Access**: Added null checks for all device attribute access operations
+- **Deep Object Navigation**: Protected nested JSON object traversal with safe navigation operators
+
+### Enhanced
+- **Production Reliability**: Applied enterprise-grade defensive programming patterns throughout
+- **Error Handling**: Graceful handling of missing data and malformed responses
+- **System Stability**: Comprehensive protection against runtime exceptions from null references
 
 ## [0.232] - 2025-06-29
 

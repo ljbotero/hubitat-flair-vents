@@ -1,7 +1,7 @@
 
 /**
  *  Hubitat Flair Vents Driver
- *  Version 0.232
+ *  Version 0.233
  *
  *  Copyright 2024 Jaime Botero. All Rights Reserved
  *

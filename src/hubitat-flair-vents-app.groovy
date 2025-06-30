@@ -1,6 +1,6 @@
 /**
  *  Hubitat Flair Vents Integration
- *  Version 0.232
+ *  Version 0.233
  *
  *  Copyright 2024 Jaime Botero. All Rights Reserved
  *
@@ -111,10 +111,10 @@ import groovy.json.JsonOutput
 @Field static final Integer POST_STATE_CHANGE_DELAY_MS = 1000
 
 // Simple API throttling delay to prevent overwhelming the Flair API (in milliseconds).
-@Field static final Integer API_CALL_DELAY_MS = 300
+@Field static final Integer API_CALL_DELAY_MS = 1000 * 2
 
 // Maximum concurrent HTTP requests to prevent API overload.
-@Field static final Integer MAX_CONCURRENT_REQUESTS = 3
+@Field static final Integer MAX_CONCURRENT_REQUESTS = 10
 
 // ------------------------------
 // End Constants
@@ -355,9 +355,9 @@ def initialize() {
   if (settings.thermostat1) {
     subscribe(settings.thermostat1, 'thermostatOperatingState', thermostat1ChangeStateHandler)
     subscribe(settings.thermostat1, 'temperature', thermostat1ChangeTemp)
-    def temp = thermostat1.currentValue('temperature') ?: 0
-    def coolingSetpoint = thermostat1.currentValue('coolingSetpoint') ?: 0
-    def heatingSetpoint = thermostat1.currentValue('heatingSetpoint') ?: 0
+    def temp = settings.thermostat1?.currentValue('temperature') ?: 0
+    def coolingSetpoint = settings.thermostat1?.currentValue('coolingSetpoint') ?: 0
+    def heatingSetpoint = settings.thermostat1?.currentValue('heatingSetpoint') ?: 0
     String hvacMode = calculateHvacMode(temp, coolingSetpoint, heatingSetpoint)
     runInMillis(INITIALIZATION_DELAY_MS, 'initializeRoomStates', [data: hvacMode])
     
@@ -396,7 +396,7 @@ private BigDecimal getRoomTemp(def vent) {
   if (tempDevice) {
     def temp = tempDevice.currentValue('temperature')
     if (temp == null) {
-      log "WARNING: Temperature device ${tempDevice.getLabel()} for room '${roomName}' is not reporting temperature!", 2
+      log "WARNING: Temperature device ${tempDevice?.getLabel() ?: 'Unknown'} for room '${roomName}' is not reporting temperature!", 2
       // Fall back to room temperature
       def roomTemp = vent.currentValue('room-current-temperature-c') ?: 0
       log "Falling back to room temperature for '${roomName}': ${roomTemp}°C", 2
@@ -405,7 +405,7 @@ private BigDecimal getRoomTemp(def vent) {
     if (settings.thermostat1TempUnit == '2') {
       temp = convertFahrenheitToCentigrade(temp)
     }
-    log "Got temp from ${tempDevice.getLabel()} for '${roomName}': ${temp}°C", 2
+    log "Got temp from ${tempDevice?.getLabel() ?: 'Unknown'} for '${roomName}': ${temp}°C", 2
     return temp
   }
   
@@ -425,9 +425,9 @@ private atomicStateUpdate(String stateKey, String key, value) {
 
 def getThermostatSetpoint(String hvacMode) {
   BigDecimal setpoint = hvacMode == COOLING ?
-      ((thermostat1.currentValue('coolingSetpoint') ?: 0) - SETPOINT_OFFSET) :
-      ((thermostat1.currentValue('heatingSetpoint') ?: 0) + SETPOINT_OFFSET)
-  setpoint = setpoint ?: thermostat1.currentValue('thermostatSetpoint')
+      ((settings?.thermostat1?.currentValue('coolingSetpoint') ?: 0) - SETPOINT_OFFSET) :
+      ((settings?.thermostat1?.currentValue('heatingSetpoint') ?: 0) + SETPOINT_OFFSET)
+  setpoint = setpoint ?: settings?.thermostat1?.currentValue('thermostatSetpoint')
   if (!setpoint) {
     logError 'Thermostat has no setpoint property, please choose a valid thermostat'
     return setpoint
@@ -1020,7 +1020,8 @@ def isValidResponse(resp) {
     return false
   }
   try {
-    if (resp.hasError()) {
+    // Check if this is an actual HTTP response object (has hasError method)
+    if (resp.hasProperty('hasError') && resp.hasError()) {
       // Check for authentication failures
       if (resp.getStatus() == 401 || resp.getStatus() == 403) {
         log "Authentication error detected (${resp.getStatus()}), re-authenticating...", 2
@@ -1035,6 +1036,13 @@ def isValidResponse(resp) {
       }
       return false
     }
+    
+    // If it's not an HTTP response object, check if it's a hub load exception
+    if (resp instanceof Exception || resp.toString().contains('LimitExceededException')) {
+      log "Hub load exception detected in response validation", 1
+      return false
+    }
+    
   } catch (err) {
     log "HTTP response validation error: ${err.message ?: err.toString()}", 1
     return false
@@ -1048,8 +1056,15 @@ def getDataAsync(String uri, String callback, data = null) {
     incrementActiveRequests()
     def headers = [ Authorization: "Bearer ${state.flairAccessToken}" ]
     def httpParams = [ uri: uri, headers: headers, contentType: CONTENT_TYPE, timeout: HTTP_TIMEOUT_SECS ]
-    asynchttpGet(callback, httpParams, data)
-    runInMillis(100, 'decrementActiveRequests')
+    
+    try {
+      asynchttpGet(callback, httpParams, data)
+    } catch (Exception e) {
+      log "HTTP GET exception: ${e.message}", 2
+      // Decrement on exception since the request didn't actually happen
+      decrementActiveRequests()
+      return
+    }
   } else {
     def retryData = [uri: uri, callback: callback]
     if (data?.device && uri.contains('/room')) {
@@ -1084,8 +1099,8 @@ def patchDataAsync(String uri, String callback, body, data = null) {
       log "HTTP PATCH exception: ${e.message}", 2
       // Decrement on exception since the request didn't actually happen
       decrementActiveRequests()
+      return
     }
-    runInMillis(100, 'decrementActiveRequests')
   } else {
     def retryData = [uri: uri, callback: callback, body: body, data: data]
     runInMillis(API_CALL_DELAY_MS, 'retryPatchDataAsync', [data: retryData])
@@ -1117,19 +1132,28 @@ def authenticate() {
     contentType: 'application/x-www-form-urlencoded'
   ]
   
-  try {
-    asynchttpPost(handleAuthResponse, params)
-  } catch (Exception e) {
-    def err = "Authentication request failed: ${e.message}"
-    logError err
-    state.authError = err
+  if (canMakeRequest()) {
+    incrementActiveRequests()
+    try {
+      asynchttpPost(handleAuthResponse, params)
+    } catch (Exception e) {
+      def err = "Authentication request failed: ${e.message}"
+      logError err
+      state.authError = err
+      state.authInProgress = false
+      decrementActiveRequests()  // Decrement on exception
+      return err
+    }
+  } else {
+    // If we can't make request now, reschedule authentication
     state.authInProgress = false
-    return err
+    runInMillis(API_CALL_DELAY_MS, 'authenticate')
   }
   return ''
 }
 
 def handleAuthResponse(resp, data) {
+  decrementActiveRequests()  // Always decrement when response comes back
   try {
     log "handleAuthResponse called with resp status: ${resp?.getStatus()}", 2
     state.authInProgress = false
@@ -1256,23 +1280,24 @@ private void discover() {
 
 
 def handleAllPucks(resp, data) {
+  decrementActiveRequests()  // Always decrement when response comes back
   try {
     log "handleAllPucks called", 2
     if (!isValidResponse(resp)) { 
       log "handleAllPucks: Invalid response status: ${resp?.getStatus()}", 2
       return 
     }
-    def respJson = resp.getJson()
-    log "All pucks endpoint response: has data=${respJson?.data != null}, count=${respJson?.data?.size() ?: 0}", 2
-    
-    if (respJson?.data) {
-      def puckCount = 0
-      respJson.data.each { puckData ->
-        try {
-          if (puckData?.id) {
-            puckCount++
-            def puckId = puckData.id?.toString()?.trim()
-            def puckName = puckData.attributes?.name?.toString()?.trim() ?: "Puck-${puckId}"
+  def respJson = resp?.getJson()
+  log "All pucks endpoint response: has data=${respJson?.data != null}, count=${respJson?.data?.size() ?: 0}", 2
+  
+  if (respJson?.data) {
+    def puckCount = 0
+    respJson.data.each { puckData ->
+      try {
+        if (puckData?.id) {
+          puckCount++
+          def puckId = puckData?.id?.toString()?.trim()
+          def puckName = puckData?.attributes?.name?.toString()?.trim() ?: "Puck-${puckId}"
             
             log "Creating puck from all pucks endpoint: ${puckName} (${puckId})", 2
             
@@ -1301,6 +1326,7 @@ def handleAllPucks(resp, data) {
 }
 
 def handleRoomsWithPucks(resp, data) {
+  decrementActiveRequests()  // Always decrement when response comes back
   try {
     log "handleRoomsWithPucks called", 2
     if (!isValidResponse(resp)) { 
@@ -1413,8 +1439,9 @@ def handleRoomsWithPucks(resp, data) {
 
 
 def handleDeviceList(resp, data) {
+  decrementActiveRequests()  // Always decrement when response comes back
   log "handleDeviceList called for ${data?.deviceType}", 2
-  if (!isValidResponse(resp)) { 
+  if (!isValidResponse(resp)) {
     // Check if this was a pucks request that returned 404
     if (resp?.hasError() && resp.getStatus() == 404 && data?.deviceType == 'pucks') {
       log "Pucks endpoint returned 404 - this is normal, trying other methods", 2
@@ -1423,7 +1450,7 @@ def handleDeviceList(resp, data) {
     }
     return 
   }
-  def respJson = resp.getJson()
+  def respJson = resp?.getJson()
   if (!respJson?.data || respJson.data.isEmpty()) {
     if (data?.deviceType == 'pucks') {
       log "No pucks found in structure endpoint - they may be included with rooms instead", 2
@@ -1436,16 +1463,16 @@ def handleDeviceList(resp, data) {
   def ventCount = 0
   def puckCount = 0
   respJson.data.each { it ->
-    if (it.type == 'vents' || it.type == 'pucks') {
+    if (it?.type == 'vents' || it?.type == 'pucks') {
       if (it.type == 'vents') {
         ventCount++
       } else if (it.type == 'pucks') {
         puckCount++
       }
       def device = [
-        id   : it.id,
-        type : it.type,
-        label: it.attributes.name
+        id   : it?.id,
+        type : it?.type,
+        label: it?.attributes?.name
       ]
       def dev = makeRealDevice(device)
       if (dev && it.type == 'vents') {
@@ -1599,6 +1626,7 @@ def getDeviceReadingWithCache(device, deviceId, deviceType, callback) {
 }
 
 def handleRoomGet(resp, data) {
+  decrementActiveRequests()  // Always decrement when response comes back
   if (!isValidResponse(resp) || !data?.device) { return }
   processRoomTraits(data.device, resp.getJson())
 }
@@ -1744,6 +1772,7 @@ def cleanupPendingRequests() {
 }
 
 def handleDeviceGet(resp, data) {
+  decrementActiveRequests()  // Always decrement when response comes back
   if (!isValidResponse(resp) || !data?.device) { return }
   processVentTraits(data.device, resp.getJson())
 }
@@ -1765,10 +1794,15 @@ def handleDeviceGetWithCache(resp, data) {
       
       processVentTraits(data.device, deviceData)
     } else {
-      log "Device reading request failed for ${cacheKey}, status: ${resp?.getStatus()}", 2
+      // Handle hub load exceptions specifically
+      if (resp instanceof Exception || resp.toString().contains('LimitExceededException')) {
+        logWarn "Device reading request failed due to hub load: ${resp.toString()}"
+      } else {
+        log "Device reading request failed for ${cacheKey}, status: ${resp?.getStatus()}", 2
+      }
     }
   } catch (Exception e) {
-    log "Error in handleDeviceGetWithCache: ${e.message}", 1
+    logWarn "Error in handleDeviceGetWithCache: ${e.message}"
   } finally {
     // Always clear the pending flag
     if (cacheKey) {
@@ -1779,21 +1813,22 @@ def handleDeviceGetWithCache(resp, data) {
 }
 
 def handlePuckGet(resp, data) {
+  decrementActiveRequests()  // Always decrement when response comes back
   if (!isValidResponse(resp) || !data?.device) { return }
   def respJson = resp.getJson()
   if (respJson?.data) {
     def puckData = respJson.data
     // Extract puck attributes
-    if (puckData.attributes?.'current-temperature-c' != null) {
+    if (puckData?.attributes?.'current-temperature-c' != null) {
       def tempC = puckData.attributes['current-temperature-c']
       def tempF = (tempC * 9/5) + 32
       sendEvent(data.device, [name: 'temperature', value: tempF, unit: '°F'])
       log "Puck temperature: ${tempF}°F", 2
     }
-    if (puckData.attributes?.'current-humidity' != null) {
+    if (puckData?.attributes?.'current-humidity' != null) {
       sendEvent(data.device, [name: 'humidity', value: puckData.attributes['current-humidity'], unit: '%'])
     }
-    if (puckData.attributes?.voltage != null) {
+    if (puckData?.attributes?.voltage != null) {
       try {
         def voltage = puckData.attributes.voltage as BigDecimal
         def battery = ((voltage - 2.0) / 1.6) * 100  // Assuming 2.0V = 0%, 3.6V = 100%
@@ -1839,6 +1874,7 @@ def handlePuckGetWithCache(resp, data) {
 
 
 def handlePuckReadingGet(resp, data) {
+  decrementActiveRequests()  // Always decrement when response comes back
   if (!isValidResponse(resp) || !data?.device) { return }
   def respJson = resp.getJson()
   if (respJson?.data) {
@@ -1978,19 +2014,27 @@ def processRoomTraits(device, details) {
 }
 
 def handleRemoteSensorGet(resp, data) {
+  decrementActiveRequests()  // Always decrement when response comes back
   if (!data) { return }
   
   // Don't log 404 errors for missing sensors - this is expected
   if (resp?.hasError() && resp.getStatus() == 404) {
-    log "No remote sensor data available for ${data.device}", 1
+    log "No remote sensor data available for ${data?.device?.getLabel() ?: 'unknown device'}", 1
     return
   }
   
   if (!isValidResponse(resp)) { return }
-  def details = resp.getJson()
-  if (!details?.data?.first()) { return }
-  def propValue = details.data.first().attributes['occupied']
-  sendEvent(data.device, [name: 'room-occupied', value: propValue])
+  
+  // Additional validation before parsing JSON
+  try {
+    def details = resp.getJson()
+    if (!details?.data?.first()) { return }
+    def propValue = details.data.first().attributes['occupied']
+    sendEvent(data.device, [name: 'room-occupied', value: propValue])
+  } catch (Exception e) {
+    log "Error parsing remote sensor JSON: ${e.message}", 2
+    return
+  }
 }
 
 def updateByRoomIdState(details) {
@@ -2019,14 +2063,22 @@ def getStructureDataAsync() {
     timeout: HTTP_TIMEOUT_SECS 
   ]
   
-  try {
-    asynchttpGet(handleStructureResponse, httpParams)
-  } catch (Exception e) {
-    logError "Structure data request failed: ${e.message}"
+  if (canMakeRequest()) {
+    incrementActiveRequests()
+    try {
+      asynchttpGet(handleStructureResponse, httpParams)
+    } catch (Exception e) {
+      logError "Structure data request failed: ${e.message}"
+      decrementActiveRequests()  // Decrement on exception
+    }
+  } else {
+    // If we can't make request now, retry later
+    runInMillis(API_CALL_DELAY_MS, 'getStructureDataAsync')
   }
 }
 
 def handleStructureResponse(resp, data) {
+  decrementActiveRequests()  // Always decrement when response comes back
   try {
     if (!isValidResponse(resp)) { 
       logError "Structure data request failed"
@@ -2096,8 +2148,13 @@ def patchVent(device, percentOpen) {
 }
 
 def handleVentPatch(resp, data) {
+  decrementActiveRequests()  // Always decrement when response comes back
   if (!isValidResponse(resp) || !data) { 
-    log "Vent patch failed - invalid response or data", 2
+    if (resp instanceof Exception || resp.toString().contains('LimitExceededException')) {
+      log "Vent patch failed due to hub load: ${resp.toString()}", 2
+    } else {
+      log "Vent patch failed - invalid response or data", 2
+    }
     return 
   }
   
@@ -2142,15 +2199,16 @@ def patchRoom(device, active) {
 }
 
 def handleRoomPatch(resp, data) {
+  decrementActiveRequests()  // Always decrement when response comes back
   if (!isValidResponse(resp) || !data) { return }
   traitExtract(data.device, resp.getJson(), 'active', 'room-active')
 }
 
 def thermostat1ChangeTemp(evt) {
   log "Thermostat changed temp to: ${evt.value}", 2
-  def temp = thermostat1.currentValue('temperature')
-  def coolingSetpoint = thermostat1.currentValue('coolingSetpoint') ?: 0
-  def heatingSetpoint = thermostat1.currentValue('heatingSetpoint') ?: 0
+  def temp = settings?.thermostat1?.currentValue('temperature')
+  def coolingSetpoint = settings?.thermostat1?.currentValue('coolingSetpoint') ?: 0
+  def heatingSetpoint = settings?.thermostat1?.currentValue('heatingSetpoint') ?: 0
   String hvacMode = calculateHvacMode(temp, coolingSetpoint, heatingSetpoint)
   def thermostatSetpoint = getThermostatSetpoint(hvacMode)
   
