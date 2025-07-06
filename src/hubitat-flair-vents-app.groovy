@@ -1,6 +1,6 @@
 /**
  *  Hubitat Flair Vents Integration
- *  Version 0.233
+ *  Version 0.234
  *
  *  Copyright 2024 Jaime Botero. All Rights Reserved
  *
@@ -111,10 +111,13 @@ import groovy.json.JsonOutput
 @Field static final Integer POST_STATE_CHANGE_DELAY_MS = 1000
 
 // Simple API throttling delay to prevent overwhelming the Flair API (in milliseconds).
-@Field static final Integer API_CALL_DELAY_MS = 1000 * 2
+@Field static final Integer API_CALL_DELAY_MS = 1000 * 3
 
 // Maximum concurrent HTTP requests to prevent API overload.
-@Field static final Integer MAX_CONCURRENT_REQUESTS = 10
+@Field static final Integer MAX_CONCURRENT_REQUESTS = 8
+
+// Maximum number of retry attempts for async API calls.
+@Field static final Integer MAX_API_RETRY_ATTEMPTS = 5
 
 // ------------------------------
 // End Constants
@@ -498,7 +501,7 @@ int roundToNearestMultiple(BigDecimal num) {
 
 
 def convertFahrenheitToCentigrade(BigDecimal tempValue) {
-  (tempValue - 32) * (5 / 9)
+  (tempValue - 32) * 5 / 9
 }
 
 def rollingAverage(BigDecimal currentAverage, BigDecimal newNumber, BigDecimal weight = 1, int numEntries = 10) {
@@ -540,18 +543,6 @@ private getThermostat1Mode() {
   return atomicState?.thermostat1Mode
 }
 
-// Get appropriate state object (atomicState in production, state in tests)
-private getStateObject() {
-  try {
-    // Try atomicState first (production)
-    if (atomicState != null) {
-      return atomicState
-    }
-  } catch (Exception e) {
-    // Fall back to state for test compatibility
-  }
-  return state
-}
 
 // Safe sendEvent wrapper for test compatibility
 private safeSendEvent(device, Map eventData) {
@@ -882,22 +873,20 @@ def clearInstanceCache() {
 
 // Initialize request tracking
 private initRequestTracking() {
-  def stateObj = getStateObject()
-  if (stateObj.activeRequests == null) {
-    stateObj.activeRequests = 0
+  if (atomicState.activeRequests == null) {
+    atomicState.activeRequests = 0
   }
 }
 
 // Check if we can make a request (under concurrent limit)
 def canMakeRequest() {
   initRequestTracking()
-  def stateObj = getStateObject()
-  def currentActiveRequests = stateObj.activeRequests ?: 0
+  def currentActiveRequests = atomicState.activeRequests ?: 0
   
   // Immediate stuck counter detection and reset
   if (currentActiveRequests >= MAX_CONCURRENT_REQUESTS) {
     log "CRITICAL: Active request counter is stuck at ${currentActiveRequests}/${MAX_CONCURRENT_REQUESTS} - resetting immediately", 1
-    stateObj.activeRequests = 0
+    atomicState.activeRequests = 0
     log "Reset active request counter to 0 immediately", 1
     return true  // Now we can make the request
   }
@@ -908,82 +897,15 @@ def canMakeRequest() {
 // Increment active request counter
 def incrementActiveRequests() {
   initRequestTracking()
-  def stateObj = getStateObject()
-  stateObj.activeRequests = (stateObj.activeRequests ?: 0) + 1
+  atomicState.activeRequests = (atomicState.activeRequests ?: 0) + 1
 }
 
 // Decrement active request counter
 def decrementActiveRequests() {
   initRequestTracking()
-  def stateObj = getStateObject()
-  def currentCount = stateObj.activeRequests ?: 0
-  stateObj.activeRequests = Math.max(0, currentCount - 1)
-  log "Decremented active requests from ${currentCount} to ${stateObj.activeRequests}", 1
-}
-
-// Retry methods for throttled requests
-def retryGetDataAsync(data) {
-  if (!data || !data.uri) {
-    logError "retryGetDataAsync called with invalid data: ${data}"
-    return
-  }
-  
-  // Check if this is a room data request that should go through cache
-  if (data.uri.contains('/room') && data.callback == 'handleRoomGetWithCache' && data.data?.deviceId) {
-    // When retry data is passed through runInMillis, device objects become serialized
-    // So we need to look up the device by ID instead
-    def deviceId = data.data.deviceId
-    def device = getChildDevice(deviceId)
-    
-    if (!device) {
-      logError "retryGetDataAsync: Could not find device with ID ${deviceId}"
-      return
-    }
-    
-    def isPuck = !device.hasAttribute('percent-open')
-    def roomId = device.currentValue('room-id')
-    
-    if (roomId) {
-      // Check cache first using instance-based cache
-      def cachedData = getCachedRoomData(roomId)
-      if (cachedData) {
-        log "Using cached room data for room ${roomId} on retry", 3
-        processRoomTraits(device, cachedData)
-        return
-      }
-      
-      // Check if request is already pending
-      if (isRequestPending(roomId)) {
-        // log "Room data request already pending for room ${roomId} on retry, skipping", 3
-        return
-      }
-    }
-    
-    // Re-route through cache check
-    getRoomDataWithCache(device, deviceId, isPuck)
-  } else {
-    // Normal retry for non-room requests
-    getDataAsync(data.uri, data.callback, data.data)
-  }
-}
-
-def retryPatchDataAsync(data) {
-  if (!data) {
-    logError "retryPatchDataAsync called with null data"
-    return
-  }
-  
-  def uri = data.uri
-  def callback = data.callback  
-  def body = data.body
-  def callData = data.data
-  
-  if (!uri || !callback) {
-    logError "retryPatchDataAsync missing required fields - uri: ${uri}, callback: ${callback}"
-    return
-  }
-  
-  patchDataAsync(uri, callback, body, callData)
+  def currentCount = atomicState.activeRequests ?: 0
+  atomicState.activeRequests = Math.max(0, currentCount - 1)
+  log "Decremented active requests from ${currentCount} to ${atomicState.activeRequests}", 1
 }
 
 // Wrapper for log.error that respects debugLevel setting
@@ -995,10 +917,11 @@ private logError(String msg) {
 }
 
 // Wrapper for log.warn that respects debugLevel setting
-private logWarn(String msg) {
+private logWarn(def msg) {
   def settingsLevel = (settings?.debugLevel as Integer) ?: 0
   if (settingsLevel > 0) {
-    log.warn msg
+    def logMessage = msg instanceof Exception ? (msg.message ?: msg.toString()) : msg.toString()
+    log.warn logMessage
   }
 }
 
@@ -1051,7 +974,7 @@ def isValidResponse(resp) {
 }
 
 // Updated getDataAsync to accept a String callback name with simple throttling.
-def getDataAsync(String uri, String callback, data = null) {
+def getDataAsync(String uri, String callback, data = null, int retryCount = 0) {
   if (canMakeRequest()) {
     incrementActiveRequests()
     def headers = [ Authorization: "Bearer ${state.flairAccessToken}" ]
@@ -1066,19 +989,69 @@ def getDataAsync(String uri, String callback, data = null) {
       return
     }
   } else {
-    def retryData = [uri: uri, callback: callback]
-    if (data?.device && uri.contains('/room')) {
-      retryData.data = [deviceId: data.device.getDeviceNetworkId()]
+    if (retryCount < MAX_API_RETRY_ATTEMPTS) {
+      def retryData = [uri: uri, callback: callback, retryCount: retryCount + 1]
+      if (data?.device && uri.contains('/room')) {
+        retryData.data = [deviceId: data.device.getDeviceNetworkId()]
+      } else {
+        retryData.data = data
+      }
+      runInMillis(API_CALL_DELAY_MS, 'retryGetDataAsyncWrapper', [data: retryData])
     } else {
-      retryData.data = data
+      logError "getDataAsync failed after ${MAX_API_RETRY_ATTEMPTS} retries for URI: ${uri}"
     }
-    runInMillis(API_CALL_DELAY_MS, 'retryGetDataAsync', [data: retryData])
+  }
+}
+
+// Wrapper method for getDataAsync retry
+def retryGetDataAsyncWrapper(data) {
+  if (!data || !data.uri) {
+    logError "retryGetDataAsyncWrapper called with invalid data: ${data}"
+    return
+  }
+  
+  // Check if this is a room data request that should go through cache
+  if (data.uri.contains('/room') && data.callback == 'handleRoomGetWithCache' && data.data?.deviceId) {
+    // When retry data is passed through runInMillis, device objects become serialized
+    // So we need to look up the device by ID instead
+    def deviceId = data.data.deviceId
+    def device = getChildDevice(deviceId)
+    
+    if (!device) {
+      logError "retryGetDataAsyncWrapper: Could not find device with ID ${deviceId}"
+      return
+    }
+    
+    def isPuck = !device.hasAttribute('percent-open')
+    def roomId = device.currentValue('room-id')
+    
+    if (roomId) {
+      // Check cache first using instance-based cache
+      def cachedData = getCachedRoomData(roomId)
+      if (cachedData) {
+        log "Using cached room data for room ${roomId} on retry", 3
+        processRoomTraits(device, cachedData)
+        return
+      }
+      
+      // Check if request is already pending
+      if (isRequestPending(roomId)) {
+        // log "Room data request already pending for room ${roomId} on retry, skipping", 3
+        return
+      }
+    }
+    
+    // Re-route through cache check
+    getRoomDataWithCache(device, deviceId, isPuck)
+  } else {
+    // Normal retry for non-room requests
+    getDataAsync(data.uri, data.callback, data.data, data.retryCount)
   }
 }
 
 // Updated patchDataAsync to accept a String callback name with simple throttling.
 // If callback is null, we use a no-op callback.
-def patchDataAsync(String uri, String callback, body, data = null) {
+def patchDataAsync(String uri, String callback, body, data = null, int retryCount = 0) {
   if (!callback) { callback = 'noOpHandler' }
   
   if (canMakeRequest()) {
@@ -1102,9 +1075,23 @@ def patchDataAsync(String uri, String callback, body, data = null) {
       return
     }
   } else {
-    def retryData = [uri: uri, callback: callback, body: body, data: data]
-    runInMillis(API_CALL_DELAY_MS, 'retryPatchDataAsync', [data: retryData])
+    if (retryCount < MAX_API_RETRY_ATTEMPTS) {
+      def retryData = [uri: uri, callback: callback, body: body, data: data, retryCount: retryCount + 1]
+      runInMillis(API_CALL_DELAY_MS, 'retryPatchDataAsyncWrapper', [data: retryData])
+    } else {
+      logError "patchDataAsync failed after ${MAX_API_RETRY_ATTEMPTS} retries for URI: ${uri}"
+    }
   }
+}
+
+// Wrapper method for patchDataAsync retry
+def retryPatchDataAsyncWrapper(data) {
+  if (!data || !data.uri || !data.callback) {
+    logError "retryPatchDataAsyncWrapper called with invalid data: ${data}"
+    return
+  }
+  
+  patchDataAsync(data.uri, data.callback, data.body, data.data, data.retryCount)
 }
 
 def noOpHandler(resp, data) {
@@ -1116,7 +1103,7 @@ def login() {
   getStructureData()
 }
 
-def authenticate() {
+def authenticate(int retryCount = 0) {
   log 'Getting access_token from Flair using async method', 2
   state.authInProgress = true
   state.remove('authError')  // Clear any previous error state
@@ -1135,7 +1122,7 @@ def authenticate() {
   if (canMakeRequest()) {
     incrementActiveRequests()
     try {
-      asynchttpPost(handleAuthResponse, params)
+      asynchttpPost('handleAuthResponse', params, [retryCount: retryCount])
     } catch (Exception e) {
       def err = "Authentication request failed: ${e.message}"
       logError err
@@ -1147,9 +1134,20 @@ def authenticate() {
   } else {
     // If we can't make request now, reschedule authentication
     state.authInProgress = false
-    runInMillis(API_CALL_DELAY_MS, 'authenticate')
+    if (retryCount < MAX_API_RETRY_ATTEMPTS) {
+      runInMillis(API_CALL_DELAY_MS, 'retryAuthenticateWrapper', [data: [retryCount: retryCount + 1]])
+    } else {
+      def err = "Authentication failed after ${MAX_API_RETRY_ATTEMPTS} retries"
+      logError err
+      state.authError = err
+    }
   }
   return ''
+}
+
+// Wrapper method for authenticate retry
+def retryAuthenticateWrapper(data) {
+  authenticate(data?.retryCount ?: 0)
 }
 
 def handleAuthResponse(resp, data) {
@@ -1729,11 +1727,10 @@ def cleanupPendingRequests() {
   def pendingDeviceRequests = state."${cacheKey}_pendingDeviceRequests"
   
   // First, check if the active request counter is stuck
-  def stateObj = getStateObject()
-  def currentActiveRequests = stateObj.activeRequests ?: 0
+  def currentActiveRequests = atomicState.activeRequests ?: 0
   if (currentActiveRequests >= MAX_CONCURRENT_REQUESTS) {
     log "CRITICAL: Active request counter is stuck at ${currentActiveRequests}/${MAX_CONCURRENT_REQUESTS} - resetting to 0", 1
-    stateObj.activeRequests = 0
+    atomicState.activeRequests = 0
     log "Reset active request counter to 0", 1
   }
   
@@ -2052,7 +2049,7 @@ def patchStructureData(Map attributes) {
   patchDataAsync(uri, null, body)
 }
 
-def getStructureDataAsync() {
+def getStructureDataAsync(int retryCount = 0) {
   log 'Getting structure data asynchronously', 2
   def uri = "${BASE_URL}/api/structures"
   def headers = [ Authorization: "Bearer ${state.flairAccessToken}" ]
@@ -2066,15 +2063,24 @@ def getStructureDataAsync() {
   if (canMakeRequest()) {
     incrementActiveRequests()
     try {
-      asynchttpGet(handleStructureResponse, httpParams)
+      asynchttpGet('handleStructureResponse', httpParams)
     } catch (Exception e) {
       logError "Structure data request failed: ${e.message}"
       decrementActiveRequests()  // Decrement on exception
     }
   } else {
     // If we can't make request now, retry later
-    runInMillis(API_CALL_DELAY_MS, 'getStructureDataAsync')
+    if (retryCount < MAX_API_RETRY_ATTEMPTS) {
+      runInMillis(API_CALL_DELAY_MS, 'retryGetStructureDataAsyncWrapper', [data: [retryCount: retryCount + 1]])
+    } else {
+      logError "getStructureDataAsync failed after ${MAX_API_RETRY_ATTEMPTS} retries"
+    }
   }
+}
+
+// Wrapper method for getStructureDataAsync retry
+def retryGetStructureDataAsyncWrapper(data) {
+  getStructureDataAsync(data?.retryCount ?: 0)
 }
 
 def handleStructureResponse(resp, data) {
@@ -2101,29 +2107,67 @@ def handleStructureResponse(resp, data) {
   }
 }
 
-def getStructureData() {
+def getStructureData(int retryCount = 0) {
   log 'getStructureData', 1
+  
+  // Check concurrent request limit first
+  if (!canMakeRequest()) {
+    if (retryCount < MAX_API_RETRY_ATTEMPTS) {
+      log "Structure data request delayed due to concurrent limit (attempt ${retryCount + 1}/${MAX_API_RETRY_ATTEMPTS})", 2
+      // Schedule retry asynchronously to avoid blocking
+      runInMillis(API_CALL_DELAY_MS, 'retryGetStructureDataWrapper', [data: [retryCount: retryCount + 1]])
+      return
+    } else {
+      logError "getStructureData failed after ${MAX_API_RETRY_ATTEMPTS} attempts due to concurrent limits"
+      return
+    }
+  }
+  
   def uri = "${BASE_URL}/api/structures"
   def headers = [ Authorization: "Bearer ${state.flairAccessToken}" ]
   def httpParams = [ uri: uri, headers: headers, contentType: CONTENT_TYPE, timeout: HTTP_TIMEOUT_SECS ]
-  httpGet(httpParams) { resp ->
-    if (!resp.success) { return }
-    def response = resp.getData()
-    if (!response) {
-      logError 'getStructureData: no data'
-      return
+  
+  incrementActiveRequests()
+  
+  try {
+    httpGet(httpParams) { resp ->
+      decrementActiveRequests()
+      
+      if (!resp.success) { 
+        throw new Exception("HTTP request failed with status: ${resp.status}")
+      }
+      def response = resp.getData()
+      if (!response) {
+        logError 'getStructureData: no data'
+        return
+      }
+      // Only log full response at debug level 1
+      logDetails 'Structure response: ', response, 1
+      def myStruct = response.data.first()
+      if (!myStruct?.attributes) {
+        logError 'getStructureData: no structure data'
+        return
+      }
+      // Log only essential fields at level 3
+      log "Structure loaded: id=${myStruct.id}, name=${myStruct.attributes.name}, mode=${myStruct.attributes.mode}", 3
+      app.updateSetting('structureId', myStruct.id)
     }
-    // Only log full response at debug level 1
-    logDetails 'Structure response: ', response, 1
-    def myStruct = response.data.first()
-    if (!myStruct?.attributes) {
-      logError 'getStructureData: no structure data'
-      return
+  } catch (Exception e) {
+    decrementActiveRequests()
+    
+    if (retryCount < MAX_API_RETRY_ATTEMPTS) {
+      log "Structure data request failed (attempt ${retryCount + 1}/${MAX_API_RETRY_ATTEMPTS}): ${e.message}", 2
+      // Schedule retry asynchronously
+      runInMillis(API_CALL_DELAY_MS, 'retryGetStructureDataWrapper', [data: [retryCount: retryCount + 1]])
+    } else {
+      logError "getStructureData failed after ${MAX_API_RETRY_ATTEMPTS} attempts: ${e.message}"
     }
-    // Log only essential fields at level 3
-    log "Structure loaded: id=${myStruct.id}, name=${myStruct.attributes.name}, mode=${myStruct.attributes.mode}", 3
-    app.updateSetting('structureId', myStruct.id)
   }
+}
+
+// Wrapper method for synchronous getStructureData retry
+def retryGetStructureDataWrapper(data) {
+  getStructureData(data?.retryCount ?: 0)
 }
 
 def patchVentDevice(device, percentOpen) {

@@ -8,23 +8,50 @@
 @Grab('org.spockframework:spock-core:2.3-groovy-3.0')
 @Grab('org.objenesis:objenesis:3.3')
 @Grab('net.bytebuddy:byte-buddy:1.14.5')
+@Grab('me.biocomp:hubitat_ci:1.2.1')
 
 import spock.lang.Specification
 import spock.lang.Unroll
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.math.BigDecimal
+import me.biocomp.hubitat_ci.api.app_api.AppExecutor
+import me.biocomp.hubitat_ci.app.HubitatAppSandbox
+import me.biocomp.hubitat_ci.validation.Flags
 
 class EfficiencyImportEdgeCasesTest extends Specification {
 
+    private static final File APP_FILE = new File('src/hubitat-flair-vents-app.groovy')
+    private static final List VALIDATION_FLAGS = [
+        Flags.DontValidateMetadata,
+        Flags.DontValidatePreferences,
+        Flags.DontValidateDefinition,
+        Flags.DontRestrictGroovy,
+        Flags.DontRequireParseMethodInDevice,
+        Flags.AllowWritingToSettings,
+        Flags.AllowReadingNonInputSettings
+    ]
+
     def app
     def mockDevice1, mockDevice2, mockDevice3
-    def originalGetStateObject
 
     def setup() {
-        // Load the app
-        def appScript = new File('/Users/lbbotero/Documents/Personal/hubitat-flair-vents2/src/hubitat-flair-vents-app.groovy').text
-        app = new GroovyShell().evaluate(appScript)
+        // Load the app with proper validation using sandbox
+        AppExecutor executorApi = Mock {
+            _ * getState() >> [:]
+        }
+        def sandbox = new HubitatAppSandbox(APP_FILE)
+        app = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+        
+        // Initialize atomicState properly
+        app.atomicState = [:]
+        
+        // Mock log to prevent null pointer exceptions
+        app.log = [error: { msg -> }, debug: { msg -> }, warn: { msg -> }]
+        
+        // Ensure atomicState persistence during method calls
+        app.metaClass.getAtomicState = { -> app.atomicState ?: [:] }
+        app.metaClass.setAtomicState = { value -> app.atomicState = value }
         
         // Mock devices with different room configurations
         mockDevice1 = createMockDevice('device-1', 'Living Room', 'room-123', 0.5, 0.7)
@@ -45,17 +72,10 @@ class EfficiencyImportEdgeCasesTest extends Specification {
         
         // Mock state for test compatibility
         app.state = [:]
-        
-        // Override getStateObject to return state for test compatibility
-        originalGetStateObject = app.metaClass.getMetaMethod('getStateObject', [] as Class[])
-        app.metaClass.getStateObject = { -> app.state }
     }
 
     def cleanup() {
-        // Restore original method if it existed
-        if (originalGetStateObject) {
-            app.metaClass.getStateObject = originalGetStateObject
-        }
+        // No cleanup needed
     }
 
     def createMockDevice(String deviceId, String roomName, String roomId, double coolingRate, double heatingRate) {

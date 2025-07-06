@@ -19,6 +19,7 @@ class MathCalculationsTest extends Specification {
             Flags.DontValidateDefinition,
             Flags.DontRestrictGroovy,
             Flags.DontRequireParseMethodInDevice,
+            Flags.AllowWritingToSettings,
             Flags.AllowReadingNonInputSettings
           ]
 
@@ -29,6 +30,7 @@ class MathCalculationsTest extends Specification {
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+    script.atomicState = [:]
 
     expect:
     script.roundToNearestMultiple(12.4) == 10
@@ -45,6 +47,7 @@ class MathCalculationsTest extends Specification {
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+    script.atomicState = [:]
 
     expect:
     script.roundToNearestMultiple(0) == 0
@@ -63,6 +66,7 @@ class MathCalculationsTest extends Specification {
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+    script.atomicState = [:]
 
     expect:
     script.rollingAverage(10, 15, 1, 2) == 12.5
@@ -80,6 +84,7 @@ class MathCalculationsTest extends Specification {
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+    script.atomicState = [:]
 
     expect:
     // Zero entries should return 0
@@ -112,6 +117,7 @@ class MathCalculationsTest extends Specification {
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+    script.atomicState = [:]
 
     expect:
     script.roundBigDecimal(3.14159, 0) == 3
@@ -134,6 +140,7 @@ class MathCalculationsTest extends Specification {
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+    script.atomicState = [:]
 
     expect:
     // Default precision is 3 decimal places

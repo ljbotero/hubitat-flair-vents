@@ -38,7 +38,7 @@ class VentOperationsTest extends Specification {
       'userSettingValues': ['dabEnabled': false, 'thermostat1Mode': 'auto'])
     
     // Initialize atomicState to prevent null pointer exceptions
-    script.atomicState = [thermostat1Mode: 'auto']
+    script.atomicState = [thermostat1Mode: 'auto', activeRequests: 0, lastRequestTime: 0, requestCounts: [:], stuckRequestCounter: 0]
     script.state = [flairAccessToken: 'test-token']
 
     when:
@@ -66,7 +66,7 @@ class VentOperationsTest extends Specification {
       'userSettingValues': ['dabEnabled': false, 'thermostat1Mode': 'auto'])
     
     // Initialize atomicState to prevent null pointer exceptions
-    script.atomicState = [thermostat1Mode: 'auto']
+    script.atomicState = [thermostat1Mode: 'auto', activeRequests: 0, lastRequestTime: 0, requestCounts: [:], stuckRequestCounter: 0]
     script.state = [flairAccessToken: 'test-token']
 
     when:
@@ -94,7 +94,7 @@ class VentOperationsTest extends Specification {
       'userSettingValues': ['dabEnabled': false, 'thermostat1Mode': 'auto'])
     
     // Initialize atomicState to prevent null pointer exceptions
-    script.atomicState = [thermostat1Mode: 'auto']
+    script.atomicState = [thermostat1Mode: 'auto', activeRequests: 0, lastRequestTime: 0, requestCounts: [:], stuckRequestCounter: 0]
     script.state = [flairAccessToken: 'test-token']
 
     when:
@@ -119,7 +119,7 @@ class VentOperationsTest extends Specification {
       'userSettingValues': ['dabEnabled': false, 'thermostat1Mode': 'auto'])
     
     // Initialize atomicState to prevent null pointer exceptions
-    script.atomicState = [thermostat1Mode: 'auto']
+    script.atomicState = [thermostat1Mode: 'auto', activeRequests: 0, lastRequestTime: 0, requestCounts: [:], stuckRequestCounter: 0]
     script.state = [flairAccessToken: 'test-token']
 
     when:
@@ -150,7 +150,7 @@ class VentOperationsTest extends Specification {
       'userSettingValues': ['dabEnabled': false, 'thermostat1Mode': 'auto'])
     
     // Initialize atomicState to prevent null pointer exceptions
-    script.atomicState = [thermostat1Mode: 'auto']
+    script.atomicState = [thermostat1Mode: 'auto', activeRequests: 0, lastRequestTime: 0, requestCounts: [:], stuckRequestCounter: 0]
     script.state = [flairAccessToken: 'test-token']
 
     when:
@@ -181,7 +181,7 @@ class VentOperationsTest extends Specification {
       'userSettingValues': ['dabEnabled': false, 'thermostat1Mode': 'auto'])
     
     // Initialize atomicState to prevent null pointer exceptions
-    script.atomicState = [thermostat1Mode: 'auto']
+    script.atomicState = [thermostat1Mode: 'auto', activeRequests: 0, lastRequestTime: 0, requestCounts: [:], stuckRequestCounter: 0]
     script.state = [flairAccessToken: 'test-token']
 
     when:
@@ -212,7 +212,7 @@ class VentOperationsTest extends Specification {
       'userSettingValues': ['dabEnabled': false, 'thermostat1Mode': 'auto'])
     
     // Initialize atomicState to prevent null pointer exceptions
-    script.atomicState = [thermostat1Mode: 'auto']
+    script.atomicState = [thermostat1Mode: 'auto', activeRequests: 0, lastRequestTime: 0, requestCounts: [:], stuckRequestCounter: 0]
     script.state = [flairAccessToken: 'test-token']
 
     when:

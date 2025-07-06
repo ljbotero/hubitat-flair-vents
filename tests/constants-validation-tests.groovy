@@ -30,6 +30,7 @@ class ConstantsValidationTest extends Specification {
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+    script.atomicState = [:]
 
     expect:
     script.BASE_URL == 'https://api.flair.co'
@@ -42,6 +43,7 @@ class ConstantsValidationTest extends Specification {
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+    script.atomicState = [:]
 
     expect:
     script.MAX_TEMP_CHANGE_RATE == 1.5
@@ -56,6 +58,7 @@ class ConstantsValidationTest extends Specification {
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+    script.atomicState = [:]
 
     expect:
     script.MIN_PERCENTAGE_OPEN == 0.0
@@ -70,6 +73,7 @@ class ConstantsValidationTest extends Specification {
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+    script.atomicState = [:]
 
     expect:
     script.MAX_MINUTES_TO_SETPOINT == 60
@@ -84,6 +88,7 @@ class ConstantsValidationTest extends Specification {
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+    script.atomicState = [:]
 
     expect:
     // Note: BASE_CONST and EXP_CONST are now defined inside calculateVentOpenPercentage function
@@ -99,6 +104,7 @@ class ConstantsValidationTest extends Specification {
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+    script.atomicState = [:]
 
     expect:
     script.COOLING == 'cooling'
@@ -114,6 +120,7 @@ class ConstantsValidationTest extends Specification {
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+    script.atomicState = [:]
 
     expect:
     script.MAX_STANDARD_VENTS == 15
@@ -128,6 +135,7 @@ class ConstantsValidationTest extends Specification {
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+    script.atomicState = [:]
 
     expect:
     script.VENT_PRE_ADJUST_THRESHOLD == 0.2
@@ -140,6 +148,7 @@ class ConstantsValidationTest extends Specification {
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+    script.atomicState = [:]
 
     expect:
     script.CONTENT_TYPE == 'application/json'

@@ -30,6 +30,7 @@ class TemperatureConversionTest extends Specification {
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+    script.atomicState = [:]
 
     expect:
     // Test common conversions with precision tolerance
@@ -47,6 +48,7 @@ class TemperatureConversionTest extends Specification {
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+    script.atomicState = [:]
 
     expect:
     // Use precision tolerance for floating point comparisons
@@ -63,6 +65,7 @@ class TemperatureConversionTest extends Specification {
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+    script.atomicState = [:]
 
     expect:
     script.calculateHvacMode(80.0, 80.0, 70.0) == 'cooling'
@@ -78,6 +81,7 @@ class TemperatureConversionTest extends Specification {
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
+    script.atomicState = [:]
 
     expect:
     // Equal distances - actual behavior chooses heating, not cooling

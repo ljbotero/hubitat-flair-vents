@@ -160,15 +160,16 @@ class InstanceBasedCachingTest extends Specification {
   def "should maintain request throttling within instance"() {
     given: "an app instance"
     def instance = createAppInstance()
+    // Initialize atomicState with all required fields to prevent null pointer exceptions
+    instance.atomicState = [activeRequests: 0, lastRequestTime: 0, requestCounts: [:], stuckRequestCounter: 0]
 
     when: "reaching request limit"
-    3.times { instance.incrementActiveRequests() }
+    10.times { instance.incrementActiveRequests() }
 
     then: "instance should not be able to make more requests"
     instance.canMakeRequest() == false
 
     when: "some requests complete (simulated by decrement)"
-    // Access private decrementActiveRequests method for testing
     2.times { 
       try {
         instance.decrementActiveRequests()

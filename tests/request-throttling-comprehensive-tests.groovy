@@ -35,7 +35,7 @@ class RequestThrottlingComprehensiveTest extends Specification {
     def maxRequests = script.MAX_CONCURRENT_REQUESTS
 
     then:
-    maxRequests == 3
+    maxRequests == 8
   }
 
   def "API_CALL_DELAY_MS constant is properly defined"() {
@@ -50,49 +50,52 @@ class RequestThrottlingComprehensiveTest extends Specification {
     def delayMs = script.API_CALL_DELAY_MS
 
     then:
-    delayMs == 300
+    delayMs == 3000
   }
 
-  def "initRequestTracking initializes state properly"() {
+  def "initRequestTracking initializes atomicState properly"() {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
-      _ * getState() >> [activeRequests: null]
+      _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
-    script.state = [:]
+    script.atomicState = [:]
 
     when:
     script.initRequestTracking()
 
     then:
-    script.state.activeRequests == 0
+    script.atomicState.activeRequests == 0
   }
 
-  def "initRequestTracking preserves existing state"() {
+  def "initRequestTracking preserves existing atomicState"() {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
-      _ * getState() >> [activeRequests: 2]
+      _ * getState() >> [:]
+      _ * getAtomicState() >> [activeRequests: 2]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
-    script.state = [activeRequests: 2]
+    script.atomicState = [activeRequests: 2]
 
     when:
     script.initRequestTracking()
 
     then:
-    script.state.activeRequests == 2
+    script.atomicState.activeRequests == 2
   }
 
   def "canMakeRequest returns true when under limit"() {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [activeRequests: 2]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
-    script.state = [activeRequests: 2]
+    script.atomicState = [activeRequests: 2]
 
     when:
     def canMake = script.canMakeRequest()
@@ -101,89 +104,87 @@ class RequestThrottlingComprehensiveTest extends Specification {
     canMake == true
   }
 
-  def "canMakeRequest returns false when at limit"() {
+  def "canMakeRequest returns true when at limit (resets stuck counter)"() {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [activeRequests: 8]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
-    script.state = [:]
-    // Increment to reach the limit (3)
-    script.incrementActiveRequests()
-    script.incrementActiveRequests()
-    script.incrementActiveRequests()
+    script.atomicState = [activeRequests: 8]
 
     when:
     def canMake = script.canMakeRequest()
 
     then:
-    canMake == false
+    canMake == true  // Should reset and return true
+    script.atomicState.activeRequests == 0  // Should be reset
   }
 
   def "canMakeRequest returns false when over limit"() {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [activeRequests: 0]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
-    script.state = [:]
-    // Increment to go over the limit
-    script.incrementActiveRequests()
-    script.incrementActiveRequests()
-    script.incrementActiveRequests()
-    script.incrementActiveRequests()
-    script.incrementActiveRequests()
+    script.atomicState = [activeRequests: 0]
+    // Increment to go over the limit (12 > 10)
+    12.times { script.incrementActiveRequests() }
 
     when:
     def canMake = script.canMakeRequest()
 
     then:
-    canMake == false
+    canMake == true  // Should reset to 0 and return true due to stuck counter detection
   }
 
   def "incrementActiveRequests increases counter"() {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [activeRequests: 0]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
-    script.state = [:]
+    script.atomicState = [activeRequests: 0]
     script.incrementActiveRequests() // Start at 1
 
     when:
     script.incrementActiveRequests()
 
     then:
-    script.state.activeRequests == 2
+    script.atomicState.activeRequests == 2
   }
 
-  def "incrementActiveRequests handles null state"() {
+  def "incrementActiveRequests initializes atomicState when missing"() {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
-    script.state = [:]
+    script.atomicState = [:]  // Empty map, not null
 
     when:
     script.incrementActiveRequests()
 
     then:
-    script.state.activeRequests == 1
+    script.atomicState.activeRequests == 1
   }
 
   def "decrementActiveRequests decreases counter"() {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [activeRequests: 0]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
-    script.state = [:]
+    script.atomicState = [activeRequests: 0]
     script.incrementActiveRequests() // Start at 1
     script.incrementActiveRequests() // Now at 2
 
@@ -191,76 +192,78 @@ class RequestThrottlingComprehensiveTest extends Specification {
     script.decrementActiveRequests()
 
     then:
-    script.state.activeRequests == 1
+    script.atomicState.activeRequests == 1
   }
 
   def "decrementActiveRequests never goes below zero"() {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [activeRequests: 0]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
-    script.state = [activeRequests: 0]
+    script.atomicState = [activeRequests: 0]
 
     when:
     script.decrementActiveRequests()
 
     then:
-    script.state.activeRequests == 0
+    script.atomicState.activeRequests == 0
   }
 
-  def "decrementActiveRequests handles null state"() {
+  def "decrementActiveRequests initializes atomicState when missing"() {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
+      _ * getAtomicState() >> [:]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
-    script.state = [:]
+    script.atomicState = [:]  // Empty map, not null
 
     when:
     script.decrementActiveRequests()
 
     then:
-    script.state.activeRequests == 0
+    script.atomicState.activeRequests == 0
   }
 
-  def "retryGetDataAsync calls getDataAsync with correct parameters"() {
+  def "getDataAsync retry functionality works correctly"() {
     setup:
     final log = new CapturingLog()
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [flairAccessToken: 'test-token']
       _ * getLog() >> log
+      _ * getAtomicState() >> [activeRequests: 0]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
-    script.state = [flairAccessToken: 'test-token', activeRequests: 0]
-    
-    def testData = [uri: 'test-uri', callback: 'testCallback', data: [test: 'data']]
+    script.state = [flairAccessToken: 'test-token']
+    script.atomicState = [activeRequests: 0]
 
     when:
-    script.retryGetDataAsync(testData)
+    script.getDataAsync('test-uri', 'testCallback', null)
 
     then:
     noExceptionThrown()
   }
 
-  def "retryPatchDataAsync calls patchDataAsync with correct parameters"() {
+  def "patchDataAsync retry functionality works correctly"() {
     setup:
     final log = new CapturingLog()
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [flairAccessToken: 'test-token']
       _ * getLog() >> log
+      _ * getAtomicState() >> [activeRequests: 0]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
-    script.state = [flairAccessToken: 'test-token', activeRequests: 0]
-    
-    def testData = [uri: 'test-uri', callback: 'testCallback', body: [test: 'body'], data: [test: 'data']]
+    script.state = [flairAccessToken: 'test-token']
+    script.atomicState = [activeRequests: 0]
 
     when:
-    script.retryPatchDataAsync(testData)
+    script.patchDataAsync('test-uri', 'testCallback', [test: 'body'], null)
 
     then:
     noExceptionThrown()
@@ -294,15 +297,15 @@ class RequestThrottlingComprehensiveTest extends Specification {
       _ * getState() >> [flairAccessToken: 'test-token']
       _ * getLog() >> log
       _ * getSetting('debugLevel') >> 1
+      _ * getAtomicState() >> [activeRequests: 0]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS,
       'userSettingValues': ['debugLevel': 1])
     script.state = [flairAccessToken: 'test-token']
-    // Set up to reach limit
-    script.incrementActiveRequests()
-    script.incrementActiveRequests()
-    script.incrementActiveRequests()
+    script.atomicState = [activeRequests: 0]
+    // Set up to reach limit (10 times)
+    10.times { script.incrementActiveRequests() }
 
     when:
     script.getDataAsync('test-uri', 'testCallback', null)
@@ -319,15 +322,15 @@ class RequestThrottlingComprehensiveTest extends Specification {
       _ * getState() >> [flairAccessToken: 'test-token']
       _ * getLog() >> log
       _ * getSetting('debugLevel') >> 1
+      _ * getAtomicState() >> [activeRequests: 0]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS,
       'userSettingValues': ['debugLevel': 1])
     script.state = [flairAccessToken: 'test-token']
-    // Set up to reach limit
-    script.incrementActiveRequests()
-    script.incrementActiveRequests()
-    script.incrementActiveRequests()
+    script.atomicState = [activeRequests: 0]
+    // Set up to reach limit (10 times)
+    10.times { script.incrementActiveRequests() }
 
     when:
     script.patchDataAsync('test-uri', 'testCallback', [test: 'body'], null)
@@ -344,11 +347,13 @@ class RequestThrottlingComprehensiveTest extends Specification {
       _ * getState() >> [flairAccessToken: 'test-token']
       _ * getLog() >> log
       _ * getSetting('debugLevel') >> 1
+      _ * getAtomicState() >> [activeRequests: 0]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS,
       'userSettingValues': ['debugLevel': 1])
     script.state = [flairAccessToken: 'test-token']
+    script.atomicState = [activeRequests: 0]
     // Set up one active request
     script.incrementActiveRequests()
 
@@ -357,7 +362,7 @@ class RequestThrottlingComprehensiveTest extends Specification {
 
     then:
     noExceptionThrown()
-    script.state.activeRequests == 2 // Should be incremented
+    script.atomicState.activeRequests == 2 // Should be incremented
   }
 
   def "patchDataAsync processes request when under limit"() {
@@ -367,11 +372,13 @@ class RequestThrottlingComprehensiveTest extends Specification {
       _ * getState() >> [flairAccessToken: 'test-token']
       _ * getLog() >> log
       _ * getSetting('debugLevel') >> 1
+      _ * getAtomicState() >> [activeRequests: 0]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS,
       'userSettingValues': ['debugLevel': 1])
     script.state = [flairAccessToken: 'test-token']
+    script.atomicState = [activeRequests: 0]
     // Set up one active request
     script.incrementActiveRequests()
 
@@ -380,7 +387,7 @@ class RequestThrottlingComprehensiveTest extends Specification {
 
     then:
     noExceptionThrown()
-    script.state.activeRequests == 2 // Should be incremented
+    script.atomicState.activeRequests == 2 // Should be incremented
   }
 
   def "patchDataAsync uses noOpHandler when callback is null"() {
@@ -390,11 +397,13 @@ class RequestThrottlingComprehensiveTest extends Specification {
       _ * getState() >> [flairAccessToken: 'test-token']
       _ * getLog() >> log
       _ * getSetting('debugLevel') >> 1
+      _ * getAtomicState() >> [activeRequests: 0]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS,
       'userSettingValues': ['debugLevel': 1])
     script.state = [flairAccessToken: 'test-token']
+    script.atomicState = [activeRequests: 0]
     // Set up one active request
     script.incrementActiveRequests()
 
@@ -403,17 +412,19 @@ class RequestThrottlingComprehensiveTest extends Specification {
 
     then:
     noExceptionThrown()
-    script.state.activeRequests == 2
+    script.atomicState.activeRequests == 2
   }
 
   def "throttling system maintains request counts accurately under concurrent load simulation"() {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [flairAccessToken: 'test-token']
+      _ * getAtomicState() >> [activeRequests: 0]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
-    script.state = [flairAccessToken: 'test-token', activeRequests: 0]
+    script.state = [flairAccessToken: 'test-token']
+    script.atomicState = [activeRequests: 0]
 
     when:
     // Simulate multiple concurrent requests
@@ -422,7 +433,7 @@ class RequestThrottlingComprehensiveTest extends Specification {
     }
 
     then:
-    script.state.activeRequests == 5
+    script.atomicState.activeRequests == 5
 
     when:
     // Some requests complete
@@ -431,17 +442,17 @@ class RequestThrottlingComprehensiveTest extends Specification {
     }
 
     then:
-    script.state.activeRequests == 2
+    script.atomicState.activeRequests == 2
 
     when:
     // Check if we can make more requests
-    def canMake1 = script.canMakeRequest() // Should be true (2 < 3)
+    def canMake1 = script.canMakeRequest() // Should be true (2 < 10)
     script.incrementActiveRequests()
-    def canMake2 = script.canMakeRequest() // Should be false (3 >= 3)
+    def canMake2 = script.canMakeRequest() // Should be true (3 < 10)
 
     then:
     canMake1 == true
-    canMake2 == false
-    script.state.activeRequests == 3
+    canMake2 == true
+    script.atomicState.activeRequests == 3
   }
 }

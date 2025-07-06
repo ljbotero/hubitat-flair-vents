@@ -18,7 +18,9 @@ class RoomChangeRateTest extends Specification {
             Flags.DontValidatePreferences,
             Flags.DontValidateDefinition,
             Flags.DontRestrictGroovy,
-            Flags.DontRequireParseMethodInDevice
+            Flags.DontRequireParseMethodInDevice,
+            Flags.AllowWritingToSettings,
+            Flags.AllowReadingNonInputSettings
           ]
   private static final AbstractMap USER_SETTINGS = ['debugLevel': 1, 'thermostat1CloseInactiveRooms': true]
 
@@ -33,6 +35,7 @@ class RoomChangeRateTest extends Specification {
     def script = sandbox.run('api': executorApi,
       'validationFlags': VALIDATION_FLAGS,
       'userSettingValues': USER_SETTINGS)
+    script.atomicState = [:]
 
     expect:
     def expectedVals = [

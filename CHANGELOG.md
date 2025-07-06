@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.234] - 2025-07-06
+
+### Fixed
+- **Critical Temperature Conversion Bug**: Fixed integer division bug in `convertFahrenheitToCentigrade()` method that prevented fractional setpoints from working correctly
+  - Root cause: `(5 / 9)` performed integer division resulting in `0` instead of `0.5555...`
+  - Solution: Changed to `* 5 / 9` for proper decimal division
+  - Impact: Fractional thermostat setpoints (75.5°F, 68.25°F) now convert correctly to Celsius
+  - Affected users: Anyone using fractional temperature setpoints with Fahrenheit thermostats
+
+- **Critical Logging Error Floods**: Fixed `logWarn()` method signature issue causing "MissingMethodException" errors in large installations
+  - Root cause: Method expected `String` parameter but was called with `Exception` objects
+  - Solution: Changed from `logWarn(String msg)` to `logWarn(def msg)` with intelligent Exception handling
+  - Impact: Eliminates error log flooding and "App generates excessive hub load" warnings
+  - Affected users: Large installations (21+ vents) experiencing hourly error messages
+
+### Enhanced
+- **API Request Management**: Improved API throttling and retry mechanisms
+  - Increased API call delay from 2s to 3s to reduce server load
+  - Reduced max concurrent requests from 10 to 8 for better stability
+  - Added comprehensive retry system with 5 maximum attempts
+  - Enhanced request tracking reliability with atomicState usage
+
+### Technical Details
+- **Temperature Conversion Fix**: The bug affected any fractional Fahrenheit temperature conversion, causing 75.5°F to convert to 0°C instead of 24.17°C
+- **Exception Handling**: `logWarn()` now safely handles both String messages and Exception objects with `.message` extraction
+- **Production Impact**: Both fixes address critical production issues reported by community users with large installations and fractional setpoints
+
+### User Benefits
+- **Fractional Setpoints Work**: 75.5°F, 68.25°F and other fractional temperatures now work correctly
+- **Clean Error Logs**: No more MissingMethodException flooding in large installations  
+- **Stable Operation**: Improved API reliability and request handling
+- **Hub Load Reduction**: Eliminated excessive hub load warnings from error loops
+
 ## [0.233] - 2025-06-30
 
 ### Fixed
