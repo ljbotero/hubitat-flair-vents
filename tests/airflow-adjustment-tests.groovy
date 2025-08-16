@@ -343,4 +343,30 @@ class AirflowAdjustmentTest extends Specification {
     result.size() == 10
     result.values().every { it > 1 } // All should be increased from 1%
   }
+
+  def "adjustVentOpeningsToEnsureMinimumAirflowTarget - Sunlight and Per-Room Setpoints"() {
+    setup:
+    AppExecutor executorApi = Mock {
+      _ * getState() >> [:]
+    }
+    def sandbox = new HubitatAppSandbox(APP_FILE)
+    def script = sandbox.run('api': executorApi,
+      'validationFlags': VALIDATION_FLAGS,
+      'userSettingValues': USER_SETTINGS,
+      'customizeScriptBeforeRun': BEFORE_RUN_SCRIPT)
+    def percentPerVentId = ['v1':5, 'v2':5]
+    def rateAndTempPerVentId = [
+      'v1': ['temp':80, 'setpoint':75, 'sunlightFactor':1.5],
+      'v2': ['temp':78, 'setpoint':76, 'sunlightFactor':0.5]
+    ]
+
+    when:
+    def result = script.adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId,
+      'cooling', percentPerVentId, 0)
+
+    then:
+    def combined = (result.values().sum()) / result.size()
+    combined >= script.MIN_COMBINED_VENT_FLOW_PERCENTAGE
+    result['v1'] >= result['v2']
+  }
 }

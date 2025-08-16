@@ -974,9 +974,15 @@ def adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId, hvacMod
       if (percentOpenVal >= MAX_PERCENTAGE_OPEN) {
         percentOpenVal = MAX_PERCENTAGE_OPEN
       } else {
-        def proportion = hvacMode == COOLING ?
-          (stateVal.temp - minTemp) / (maxTemp - minTemp) :
-          (maxTemp - stateVal.temp) / (maxTemp - minTemp)
+        def targetTemp = stateVal?.setpoint != null ? stateVal.setpoint :
+          (hvacMode == COOLING ? minTemp : maxTemp)
+        def tempRange = (maxTemp - minTemp)
+        def tempDiff = hvacMode == COOLING ?
+          (stateVal.temp - targetTemp) :
+          (targetTemp - stateVal.temp)
+        if (tempDiff < 0) { tempDiff = 0 }
+        def proportion = tempRange != 0 ? tempDiff / tempRange : 0
+        proportion = proportion * (stateVal?.sunlightFactor ?: 1)
         def increment = INREMENT_PERCENTAGE_WHEN_REACHING_VENT_FLOW_TAGET * proportion
         percentOpenVal = percentOpenVal + increment
         calculatedPercentOpenPerVentId."${ventId}" = percentOpenVal
@@ -1066,12 +1072,13 @@ def calculateLongestMinutesToTarget(rateAndTempPerVentId, hvacMode, setpoint, ma
     try {
       def minutesToTarget = -1
       def rate = stateVal.rate
+      def targetSetpoint = stateVal?.setpoint != null ? stateVal.setpoint : setpoint
       if (closeInactiveRooms == true && !stateVal.active) {
         log("'${stateVal.name}' is inactive", 3)
-      } else if (hasRoomReachedSetpoint(hvacMode, setpoint, stateVal.temp)) {
+      } else if (hasRoomReachedSetpoint(hvacMode, targetSetpoint, stateVal.temp)) {
         log("'${stateVal.name}' has already reached  setpoint", 3)
       } else if (rate > 0) {
-        minutesToTarget = Math.abs(setpoint - stateVal.temp) / rate
+        minutesToTarget = Math.abs(targetSetpoint - stateVal.temp) / rate
       } else if (rate == 0) {
         minutesToTarget = 0
       }
@@ -1120,4 +1127,24 @@ def calculateRoomChangeRate(lastStartTemp, currentTemp, totalMinutes, percentOpe
     return -1
   }
   return approxEquivMaxRate
+}
+
+def getSunlightCondition(Date currentTime, Date sunriseTime, Date sunsetTime, String weatherCondition) {
+  if (currentTime.before(sunriseTime) || currentTime.after(sunsetTime)) {
+    return 'night'
+  }
+  def weather = weatherCondition?.toLowerCase() ?: ''
+  if (weather.contains('cloud') || weather.contains('rain')) {
+    return 'overcast'
+  }
+  long sunriseDiff = Math.abs(currentTime.time - sunriseTime.time)
+  long sunsetDiff = Math.abs(currentTime.time - sunsetTime.time)
+  long threshold = 30 * 60 * 1000 // 30 minutes in ms
+  if (sunriseDiff <= threshold) {
+    return 'sunrise'
+  }
+  if (sunsetDiff <= threshold) {
+    return 'sunset'
+  }
+  return 'day'
 }

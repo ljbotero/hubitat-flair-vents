@@ -22,6 +22,7 @@ class RoomSetpointTest extends Specification {
             Flags.AllowWritingToSettings,
             Flags.AllowReadingNonInputSettings
           ]
+  private static final AbstractMap USER_SETTINGS = ['debugLevel': 1, 'thermostat1CloseInactiveRooms': true]
 
   def "hasRoomReachedSetpointTest - Basic Scenarios"() {
     setup:
@@ -194,5 +195,25 @@ class RoomSetpointTest extends Specification {
     // Heating: temp - SETPOINT_OFFSET_C + VENT_PRE_ADJUSTMENT_THRESHOLD_C > setpoint  
     // Returns TRUE when temp - 0.5 <= setpoint (boundary case triggers pre-adjustment)
     script.isThermostatAboutToChangeState('heating', 22.0, 22.5) == true // 22.5 - 0.5 = 22.0 (boundary triggers)
+  }
+
+  def "calculateLongestMinutesToTargetTest - Per Vent Setpoints"() {
+    setup:
+    def log = new CapturingLog()
+    AppExecutor executorApi = Mock {
+      _ * getState() >> [:]
+      _ * getLog() >> log
+    }
+    def sandbox = new HubitatAppSandbox(APP_FILE)
+    def script = sandbox.run('api': executorApi,
+      'validationFlags': VALIDATION_FLAGS,
+      'userSettingValues': USER_SETTINGS)
+    def rateAndTempPerVentId = [
+      'vent1': [rate:0.5, temp:25, active:true, name:'Room1', setpoint:22],
+      'vent2': [rate:0.3, temp:21, active:true, name:'Room2', setpoint:21]
+    ]
+
+    expect:
+    script.calculateLongestMinutesToTarget(rateAndTempPerVentId, 'cooling', 0, 60, true) == 6
   }
 }
