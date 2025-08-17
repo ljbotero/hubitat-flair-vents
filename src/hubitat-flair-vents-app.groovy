@@ -1,6 +1,6 @@
 /**
  *  Hubitat Flair Vents Integration
- *  Version 0.234
+ *  Version 0.233
  *
  *  Copyright 2024 Jaime Botero. All Rights Reserved
  *
@@ -501,7 +501,7 @@ int roundToNearestMultiple(BigDecimal num) {
 
 
 def convertFahrenheitToCentigrade(BigDecimal tempValue) {
-  (tempValue - 32) * 5 / 9
+  (tempValue - 32) * (5 / 9)
 }
 
 def rollingAverage(BigDecimal currentAverage, BigDecimal newNumber, BigDecimal weight = 1, int numEntries = 10) {
@@ -917,11 +917,10 @@ private logError(String msg) {
 }
 
 // Wrapper for log.warn that respects debugLevel setting
-private logWarn(def msg) {
+private logWarn(String msg) {
   def settingsLevel = (settings?.debugLevel as Integer) ?: 0
   if (settingsLevel > 0) {
-    def logMessage = msg instanceof Exception ? (msg.message ?: msg.toString()) : msg.toString()
-    log.warn logMessage
+    log.warn msg
   }
 }
 
