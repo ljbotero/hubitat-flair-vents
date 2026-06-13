@@ -1,0 +1,51 @@
+{
+  "id": "single-active-room-heating",
+  "_comment": "R17.6(d) heating mirror of single-active-room. One active room (main) is below setpoint and is its own bottleneck; inactive rooms are excluded. Temps mirrored as 2*setpoint - tempCooling. Expected output REGENERATED from the Python Reference (do not hand-edit).",
+  "mode": "heating",
+  "setpointC": 24.0,
+  "settings": {
+    "safetyFloorPct": 40.0,
+    "conventionalVents": 1,
+    "conventionalOpenPct": 50.0,
+    "inactiveOpenPctSum": 0.0,
+    "inactiveCount": 2,
+    "granularity": 5,
+    "crosscoupling": true,
+    "hysteresisC": 0.3,
+    "airflowLimitedMarginPct": 5.0,
+    "airflowLimitedErrorC": 0.5,
+    "horizonMin": 30.0,
+    "spreadGuardrailC": 1.0,
+    "spreadImprovementDeadbandC": 0.3
+  },
+  "rooms": [
+    {
+      "roomId": "main",
+      "tempC": 22.0,
+      "active": true,
+      "efficiency": 0.05,
+      "leak": 0.10,
+      "currentOpen": 60.0,
+      "ventIds": ["v_main"]
+    },
+    {
+      "roomId": "spare1",
+      "tempC": 22.5,
+      "active": false,
+      "efficiency": 0.06,
+      "leak": 0.10,
+      "currentOpen": 0.0,
+      "ventIds": ["v_spare1"]
+    },
+    {
+      "roomId": "spare2",
+      "tempC": 23.1,
+      "active": false,
+      "efficiency": 0.07,
+      "leak": 0.10,
+      "currentOpen": 0.0,
+      "ventIds": ["v_spare2"]
+    }
+  ],
+  "duct": null
+}

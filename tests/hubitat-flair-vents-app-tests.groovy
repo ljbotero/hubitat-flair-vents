@@ -1,4 +1,3 @@
-package bot.flair
 
 // Run `gradle build` to test
 // More info @ https://github.com/biocomp/hubitat_ci/blob/master/docs/how_to_test.md
@@ -12,7 +11,7 @@ import spock.lang.Specification
 
 class Test extends Specification {
 
-  private static final File APP_FILE = new File('src/hubitat-flair-vents-app.groovy')
+  private static final String APP_FILE = Dabv2AppHarness.combinedAppText()
   private static final List VALIDATION_FLAGS = [
             Flags.DontValidateMetadata,
             Flags.DontValidatePreferences,

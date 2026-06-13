@@ -1,4 +1,3 @@
-package bot.flair
 
 // Simple Framework Verification Test
 import spock.lang.Specification

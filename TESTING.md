@@ -1,5 +1,114 @@
 # Testing Guide for Hubitat-Flair Vents Integration
 
+## Off-device JVM/Spock harness (DAB v2 — spec `hubitat-flair-vents-dab-v2`)
+
+The DAB v2 work runs entirely **off-device** on the JVM with Spock — no physical
+Hubitat hub (R18.1). The same root Gradle build compiles two source trees:
+
+- `src/` — the Hubitat app + child drivers (exercised through the `hubitat_ci`
+  sandbox).
+- `libraries/` — the **pure** DAB v2 math modules (`dabv2-*.groovy`). These
+  contain **no** Hubitat platform APIs, no wall-clock time, and no randomness, so
+  the identical source is compiled verbatim here and `#include`-d by the app
+  on-device (R18.2 / R18.7). They compile and are asserted against directly on
+  the JVM (see `tests/harness-smoke-tests.groovy`).
+
+A Gradle wrapper is provided, so use `./gradlew` (the documented commands below).
+
+### Documented run commands (R18.6)
+
+```bash
+# from the repo root (hubitat-flair-vents/)
+./gradlew test                       # full off-device suite (unit + property + parity + persistence)
+./gradlew test --tests '*Parity*'    # parity gate only (added by task 8)
+./gradlew test --tests '*Property*'  # property-based suite only
+./gradlew codenarcMain codenarcTest  # quality / lint gate (npm-free, see below)
+```
+
+### Property-based tests — tagging convention
+
+The harness standardizes on **Spock data-driven generators + a small seeded
+random helper** (`tests/support/PropertyGen.groovy`), not jqwik: Spock
+1.2-groovy-2.5 runs on the JUnit 4 platform that the existing suite depends on,
+and adding a JUnit 5 property engine would fork the test platform. `PropertyGen`
+supplies randomized, reproducible inputs and the iteration count.
+
+Each Correctness Property (1–17 in `design.md`) is implemented by **exactly one**
+Spock feature method that:
+
+1. lives in a spec class whose name contains `Property` (so `--tests '*Property*'`
+   selects it — e.g. `SafetyFloorPropertySpec`);
+2. is named with the **exact tag** `Feature: hubitat-flair-vents-dab-v2, Property N: <text>`;
+3. drives `>= PropertyGen.ITERATIONS` (100) randomized examples via a `where:`
+   block (`i << (0..<PropertyGen.ITERATIONS)`), seeding `PropertyGen.forIteration(i)`
+   so any failing iteration is reproducible.
+
+`tests/harness-property-tests.groovy` (`HarnessPropertySpec`) is the worked
+example of this convention.
+
+### Parity evidence gate — shared fixtures + Reference regeneration (R17, D9)
+
+The DAB v2 port is validated by **parity** against the validated Python
+Reference (`hvac_vent_optimizer`) rather than a Groovy simulator (decision D9).
+Both sides consume the **same** portable JSON scenarios; the Reference produces
+the expected outputs.
+
+- **Fixtures live in `tests/resources/parity/`** as `*.scenario.json` (the
+  serialized allocator input + settings — platform-neutral) and
+  `*.expected.json` (the Reference-generated commanded apertures,
+  `airflowLimited`, `floorBinding`, `combinedOpenPct`, the stamped
+  `referenceCommit` git SHA, and `tolerance.aperturePoints`).
+  > Note: the design refers to `test/resources/parity/`; the actual harness
+  > test source root is `tests/` (see `build.gradle` `sourceSets`), so fixtures
+  > are under `tests/resources/parity/`. The loader also accepts the `test/`
+  > spelling as a fallback.
+- **Groovy loader:** `tests/support/ParityFixtures.groovy` parses a scenario
+  into the pure `RoomAllocInput` / `AllocSettings` / `DuctSignals` (+ learned
+  `VentCurve`) types and the expected file into `ParityExpected`. The schema is
+  exercised by `ParitySchemaSpec` (`tests/parity-schema-tests.groovy`).
+- **Schema test only here (task 8.1):** the six required comfort-critical
+  scenarios are authored by task 8.2; the ±1-point parity comparison
+  (Property 17) is task 8.3.
+
+#### Regenerate the Reference expected outputs
+
+A committed Python tool, `tools/gen_parity_fixtures`, drives the Reference's
+HA-free `balance`/`learning` modules over the shared scenarios and rewrites the
+`*.expected.json` files, stamping each with the Reference git SHA. It loads the
+Reference modules directly by file path, so **no Home Assistant install is
+needed**.
+
+```bash
+# from the hubitat-flair-vents working copy, pointing at your hvac_vent_optimizer checkout
+python tools/gen_parity_fixtures \
+    --reference ../hvac_vent_optimizer \
+    --scenarios tests/resources/parity \
+    --out       tests/resources/parity
+```
+
+Short form (uses the defaults above): `python tools/gen_parity_fixtures`. See
+`tools/gen_parity_fixtures/README.md` for all options and the SHA-stamping
+details. Run `./gradlew test --tests '*Parity*'` afterwards to validate.
+
+### Quality / lint gate — CodeNarc (npm-free)
+
+`./gradlew codenarcMain codenarcTest` reproduces the lint gate **without npm**.
+The frozen warning baseline in `docs/quality-baseline.md` was captured with
+`npm-groovy-lint` (which embeds CodeNarc); the Gradle `codenarc` tasks are the
+npm-free equivalent so CI/local runs need no Node toolchain. Config:
+
+- ruleset: `config/codenarc/codenarc.groovy` (mirrors `.groovylintrc.json` —
+  `"extends": "all"`, `LineLength = 160`, `Indentation = 2 spaces`, and the same
+  disabled rules);
+- `codenarcMain` lints `src/` + `libraries/`; `codenarcTest` lints `tests/`;
+- runs with `ignoreFailures = true` — the gate is "no net increase per modified
+  file vs. baseline" (R18.4), so the reports under
+  `build/reports/codenarc/{main,test}.{html,txt,xml}` are the source of truth,
+  not a hard pass/fail.
+
+> Note: the legacy `gradle test` commands below still work. New DAB v2 work
+> should prefer `./gradlew`.
+
 ## **Quick Start - Running Tests**
 
 ### **Basic Test Commands**

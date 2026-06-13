@@ -1,0 +1,70 @@
+{
+  "id": "airflow-limited-crosscoupling",
+  "_comment": "R17.6(b) airflow-limited room triggering cross-coupling (cooling). The laggard (loft) has an early-knee learned curve (airflow plateaus by ~35% aperture, KNEE_EPS=0.02 -> knee=35) yet is still 3 C off-target, so it pins at its knee and joins the airflow-limited set. With cross-coupling enabled, every active at/past-setpoint room (parlor satisfied; hall at setpoint) is driven toward 0% to redirect air to the laggard, while the single safety-floor choke point keeps combined >= floor. Expected output REGENERATED from the Python Reference (do not hand-edit).",
+  "mode": "cooling",
+  "setpointC": 24.0,
+  "settings": {
+    "safetyFloorPct": 40.0,
+    "conventionalVents": 2,
+    "conventionalOpenPct": 50.0,
+    "inactiveOpenPctSum": 0.0,
+    "inactiveCount": 0,
+    "granularity": 5,
+    "crosscoupling": true,
+    "hysteresisC": 0.3,
+    "airflowLimitedMarginPct": 5.0,
+    "airflowLimitedErrorC": 0.5,
+    "horizonMin": 30.0,
+    "spreadGuardrailC": 1.0,
+    "spreadImprovementDeadbandC": 0.3
+  },
+  "rooms": [
+    {
+      "roomId": "loft",
+      "tempC": 27.0,
+      "active": true,
+      "efficiency": 0.05,
+      "leak": 0.10,
+      "currentOpen": 50.0,
+      "ventIds": ["v_loft"],
+      "curve": {
+        "breakpoints": [0, 5, 10, 20, 35, 50, 75, 100],
+        "flow": [0.10, 0.55, 0.80, 0.95, 0.99, 1.0, 1.0, 1.0],
+        "counts": [12, 12, 12, 12, 12, 12, 12, 12]
+      }
+    },
+    {
+      "roomId": "parlor",
+      "tempC": 23.2,
+      "active": true,
+      "efficiency": 0.40,
+      "leak": 0.10,
+      "currentOpen": 60.0,
+      "ventIds": ["v_parlor"],
+      "curve": {
+        "breakpoints": [0, 5, 10, 20, 35, 50, 75, 100],
+        "flow": [0.10, 0.45, 0.62, 0.78, 0.90, 0.97, 0.99, 1.0],
+        "counts": [10, 10, 10, 10, 10, 10, 10, 10]
+      }
+    },
+    {
+      "roomId": "hall",
+      "tempC": 23.8,
+      "active": true,
+      "efficiency": 0.10,
+      "leak": 0.12,
+      "currentOpen": 40.0,
+      "ventIds": ["v_hall"]
+    },
+    {
+      "roomId": "shed",
+      "tempC": 25.0,
+      "active": false,
+      "efficiency": 0.05,
+      "leak": 0.10,
+      "currentOpen": 0.0,
+      "ventIds": ["v_shed"]
+    }
+  ],
+  "duct": null
+}

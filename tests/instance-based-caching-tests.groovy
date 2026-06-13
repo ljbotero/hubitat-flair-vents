@@ -1,4 +1,3 @@
-package bot.flair
 
 // Instance-Based Caching Tests
 // Tests for thread-safe, instance-scoped caching to replace problematic static fields
@@ -13,7 +12,7 @@ import spock.lang.Specification
 
 class InstanceBasedCachingTest extends Specification {
 
-  private static final File APP_FILE = new File('src/hubitat-flair-vents-app.groovy')
+  private static final String APP_FILE = Dabv2AppHarness.combinedAppText()
   private static final List VALIDATION_FLAGS = [
             Flags.DontValidateMetadata,
             Flags.DontValidatePreferences,
@@ -27,10 +26,15 @@ class InstanceBasedCachingTest extends Specification {
   // Helper method to create app instances for testing
   def createAppInstance(Map settings = [:]) {
     def log = new CapturingLog()
+    // Persistent per-instance atomicState map so request-tracking reads/writes
+    // (activeRequests, etc.) resolve to a real object — the sandbox provides no
+    // atomicState by default, whereas on-device it is always present.
+    def instanceAtomicState = [activeRequests: 0, lastRequestTime: 0, requestCounts: [:], stuckRequestCounter: 0]
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [flairAccessToken: 'test-token']
       _ * getLog() >> log
       _ * getSetting(_) >> { String key -> settings[key] }
+      _ * getAtomicState() >> instanceAtomicState
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS,

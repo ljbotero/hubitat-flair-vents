@@ -2,6 +2,48 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.236] - 2026-06-13 (Beta / Early Release channel)
+
+> Distributed as a single Hubitat **Bundle** (`bundles/flair-vents.v0.236.zip`) on the
+> HPM **Beta / Early Release** channel (`betaVersion` + `betaLocation` in
+> `packageManifest.json`). Both the stable and beta artifacts are hosted on `main`; no
+> separate release branch is used. Existing installs keep the legacy DAB strategy by
+> default.
+
+### Added
+- **DAB v2 `balance` control strategy** — the validated Dynamic Airflow Balancing v2
+  algorithm (synchronized-convergence allocator, learned per-room/per-vent efficiency,
+  airflow-limited cross-coupling) ported to Groovy, selectable alongside the retained
+  legacy `dab` strategy. New-install default is parity-gated against the Python reference.
+- **Inviolable airflow safety floor** applied as the single choke point for every vent
+  dispatch under both strategies (combined open % never driven below the configured
+  floor; default 40%).
+- **Per-room door and occupancy inputs** — each room can have its own contact (door)
+  sensor, and occupancy is read from Flair's per-room attribute. Global sensors remain
+  as fallbacks. An open door or unoccupied room now affects only its own room's
+  allocation instead of all rooms.
+- **Opt-in diagnostics** — per-room diagnostic child devices plus a zone-summary device.
+- **`FlairVentsDabv2` library** — the pure DAB v2 math modules, shipped inside the bundle
+  and pulled on-device via `#include` (no manual library install step).
+
+### Changed
+- DAB v2 algorithm modules refactored to a sandbox-safe, classes-free form (top-level
+  methods + Map value objects) so the identical source runs under the off-device Spock
+  harness and inside the Hubitat sandbox.
+
+## [0.235] - 2026-06-13 (Stable channel)
+
+> Now distributed as a single Hubitat **Bundle** (`bundles/flair-vents.v0.235.zip`) via
+> Hubitat Package Manager, bundling the app together with both the **Flair vents** and
+> **Flair pucks** drivers. Retains the established (legacy) Dynamic Airflow Balancing
+> strategy.
+
+### Changed
+- Packaging moved to a single HPM Bundle (app + vents driver + pucks driver); manual
+  per-file driver/app installation is no longer required.
+- Hubitat Package Manager manifest updated to serve both a stable (`0.235`) and a beta
+  (`0.236`) channel from `main`.
+
 ## [0.234] - 2025-07-06
 
 ### Fixed

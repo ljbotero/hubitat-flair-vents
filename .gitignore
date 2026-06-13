@@ -3,12 +3,15 @@
 .code_cerebro
 build
 bin
+docs
 memory-bank
 .idea/
 .vscode/
 .hubitat/
 
-# Spec hubitat-flair-vents-dab-v2: track this repo's docs/ deliverables
-# (overrides a global ~/.gitignore_global "docs" rule that would hide them).
-!docs/
-!docs/**
+# Python bytecode from tools/ (parity fixture generator)
+__pycache__/
+*.pyc
+
+# OS cruft
+.DS_Store

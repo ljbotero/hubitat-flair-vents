@@ -1,4 +1,3 @@
-package bot.flair
 
 // Comprehensive Request Throttling Tests
 // Tests for all throttling functionality including MAX_CONCURRENT_REQUESTS
@@ -12,7 +11,7 @@ import spock.lang.Specification
 
 class RequestThrottlingComprehensiveTest extends Specification {
 
-  private static final File APP_FILE = new File('src/hubitat-flair-vents-app.groovy')
+  private static final String APP_FILE = Dabv2AppHarness.combinedAppText()
   private static final List VALIDATION_FLAGS = [
             Flags.DontValidateMetadata,
             Flags.DontValidatePreferences,
@@ -104,7 +103,11 @@ class RequestThrottlingComprehensiveTest extends Specification {
     canMake == true
   }
 
-  def "canMakeRequest returns true when at limit (resets stuck counter)"() {
+  def "canMakeRequest returns false at the limit without mutating the counter"() {
+    // Task 2.6 (F-13, M3): canMakeRequest is now a pure predicate. Reaching the
+    // concurrency cap engages the throttle (returns false) instead of resetting
+    // the in-flight counter and returning true. Stuck-counter recovery lives in
+    // the periodic cleanupPendingRequests(); callers retry a false result.
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [:]
@@ -118,8 +121,8 @@ class RequestThrottlingComprehensiveTest extends Specification {
     def canMake = script.canMakeRequest()
 
     then:
-    canMake == true  // Should reset and return true
-    script.atomicState.activeRequests == 0  // Should be reset
+    canMake == false  // throttle engages at the cap
+    script.atomicState.activeRequests == 8  // pure predicate: counter untouched
   }
 
   def "canMakeRequest returns false when over limit"() {
@@ -131,14 +134,16 @@ class RequestThrottlingComprehensiveTest extends Specification {
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)
     script.atomicState = [activeRequests: 0]
-    // Increment to go over the limit (12 > 10)
+    // Increment to go over the limit (12 > 8)
     12.times { script.incrementActiveRequests() }
 
     when:
     def canMake = script.canMakeRequest()
 
     then:
-    canMake == true  // Should reset to 0 and return true due to stuck counter detection
+    // Task 2.6 (F-13, M3): cannot be bypassed to exceed the cap.
+    canMake == false
+    script.atomicState.activeRequests == 12  // counter is not silently reset
   }
 
   def "incrementActiveRequests increases counter"() {

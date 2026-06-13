@@ -1,0 +1,18 @@
+{
+  "airflowLimited": [
+    "loft"
+  ],
+  "combinedOpenPct": 40.0,
+  "floorBinding": true,
+  "id": "airflow-limited-crosscoupling-heating",
+  "predictedSpreadC": 1.515,
+  "referenceCommit": "f66a740cdb99f07da2ac4f3ffba1c94bc8aae395",
+  "targets": {
+    "hall": 0.0,
+    "loft": 100.0,
+    "parlor": 0.0
+  },
+  "tolerance": {
+    "aperturePoints": 1
+  }
+}

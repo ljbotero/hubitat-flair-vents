@@ -1,0 +1,70 @@
+{
+  "id": "overcool-drag-heating",
+  "_comment": "R17.6(a) heating mirror of overcool-drag-cooling (symmetric about the setpoint): an EFFICIENT room (den) has overHEATED past setpoint -> satisfied -> 0%, while a LOW-effectiveness laggard (nursery) lags far below and becomes the bottleneck. Temps are mirrored as 2*setpoint - tempCooling so |error| and satisfaction are preserved. Expected output REGENERATED from the Python Reference (do not hand-edit).",
+  "mode": "heating",
+  "setpointC": 24.0,
+  "settings": {
+    "safetyFloorPct": 40.0,
+    "conventionalVents": 2,
+    "conventionalOpenPct": 50.0,
+    "inactiveOpenPctSum": 0.0,
+    "inactiveCount": 1,
+    "granularity": 5,
+    "crosscoupling": true,
+    "hysteresisC": 0.3,
+    "airflowLimitedMarginPct": 5.0,
+    "airflowLimitedErrorC": 0.5,
+    "horizonMin": 30.0,
+    "spreadGuardrailC": 1.0,
+    "spreadImprovementDeadbandC": 0.3
+  },
+  "rooms": [
+    {
+      "roomId": "nursery",
+      "tempC": 20.5,
+      "active": true,
+      "efficiency": 0.015,
+      "leak": 0.10,
+      "currentOpen": 100.0,
+      "ventIds": ["v_nursery"]
+    },
+    {
+      "roomId": "study",
+      "tempC": 22.6,
+      "active": true,
+      "efficiency": 0.08,
+      "leak": 0.12,
+      "currentOpen": 50.0,
+      "ventIds": ["v_study"],
+      "curve": {
+        "breakpoints": [0, 5, 10, 20, 35, 50, 75, 100],
+        "flow": [0.10, 0.45, 0.62, 0.78, 0.90, 0.97, 0.99, 1.0],
+        "counts": [10, 10, 10, 10, 10, 10, 10, 10]
+      }
+    },
+    {
+      "roomId": "den",
+      "tempC": 25.2,
+      "active": true,
+      "efficiency": 0.45,
+      "leak": 0.10,
+      "currentOpen": 100.0,
+      "ventIds": ["v_den"],
+      "curve": {
+        "breakpoints": [0, 5, 10, 20, 35, 50, 75, 100],
+        "flow": [0.10, 0.45, 0.62, 0.78, 0.90, 0.97, 0.99, 1.0],
+        "counts": [10, 10, 10, 10, 10, 10, 10, 10]
+      }
+    },
+    {
+      "roomId": "cellar",
+      "tempC": 22.0,
+      "active": false,
+      "efficiency": 0.05,
+      "leak": 0.10,
+      "currentOpen": 0.0,
+      "ventIds": ["v_cellar"]
+    }
+  ],
+  "duct": null
+}

@@ -1,0 +1,18 @@
+{
+  "airflowLimited": [],
+  "combinedOpenPct": 40.0,
+  "floorBinding": true,
+  "id": "all-satisfied-heating",
+  "predictedSpreadC": 0.0,
+  "referenceCommit": "f66a740cdb99f07da2ac4f3ffba1c94bc8aae395",
+  "targets": {
+    "arctic": 0.0,
+    "attic": 100.0,
+    "breeze": 0.0,
+    "cove": 0.0,
+    "loft": 100.0
+  },
+  "tolerance": {
+    "aperturePoints": 1
+  }
+}

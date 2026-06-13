@@ -1,0 +1,70 @@
+{
+  "id": "overcool-drag-cooling",
+  "_comment": "R17.6(a) average-drag failure mode (cooling): an EFFICIENT room (den, e=0.45) has overcooled PAST the setpoint and is satisfied -> overshoot-close to 0% (it must stop dragging the active-room average down and stop stealing capacity). A LOW-effectiveness laggard (nursery, e=0.015) is far off-target and becomes the bottleneck pinned full open (airflow-limited). A mid room (study) is throttled to converge at tau*. The matching *.expected.json is REGENERATED from the Python Reference by tools/gen_parity_fixtures (do not hand-edit).",
+  "mode": "cooling",
+  "setpointC": 24.0,
+  "settings": {
+    "safetyFloorPct": 40.0,
+    "conventionalVents": 2,
+    "conventionalOpenPct": 50.0,
+    "inactiveOpenPctSum": 0.0,
+    "inactiveCount": 1,
+    "granularity": 5,
+    "crosscoupling": true,
+    "hysteresisC": 0.3,
+    "airflowLimitedMarginPct": 5.0,
+    "airflowLimitedErrorC": 0.5,
+    "horizonMin": 30.0,
+    "spreadGuardrailC": 1.0,
+    "spreadImprovementDeadbandC": 0.3
+  },
+  "rooms": [
+    {
+      "roomId": "nursery",
+      "tempC": 27.5,
+      "active": true,
+      "efficiency": 0.015,
+      "leak": 0.10,
+      "currentOpen": 100.0,
+      "ventIds": ["v_nursery"]
+    },
+    {
+      "roomId": "study",
+      "tempC": 25.4,
+      "active": true,
+      "efficiency": 0.08,
+      "leak": 0.12,
+      "currentOpen": 50.0,
+      "ventIds": ["v_study"],
+      "curve": {
+        "breakpoints": [0, 5, 10, 20, 35, 50, 75, 100],
+        "flow": [0.10, 0.45, 0.62, 0.78, 0.90, 0.97, 0.99, 1.0],
+        "counts": [10, 10, 10, 10, 10, 10, 10, 10]
+      }
+    },
+    {
+      "roomId": "den",
+      "tempC": 22.8,
+      "active": true,
+      "efficiency": 0.45,
+      "leak": 0.10,
+      "currentOpen": 100.0,
+      "ventIds": ["v_den"],
+      "curve": {
+        "breakpoints": [0, 5, 10, 20, 35, 50, 75, 100],
+        "flow": [0.10, 0.45, 0.62, 0.78, 0.90, 0.97, 0.99, 1.0],
+        "counts": [10, 10, 10, 10, 10, 10, 10, 10]
+      }
+    },
+    {
+      "roomId": "cellar",
+      "tempC": 26.0,
+      "active": false,
+      "efficiency": 0.05,
+      "leak": 0.10,
+      "currentOpen": 0.0,
+      "ventIds": ["v_cellar"]
+    }
+  ],
+  "duct": null
+}

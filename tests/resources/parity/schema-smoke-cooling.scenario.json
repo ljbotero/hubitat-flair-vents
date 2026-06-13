@@ -1,0 +1,70 @@
+{
+  "id": "schema-smoke-cooling",
+  "_comment": "Task 8.1 portable-format anchor fixture (NOT one of the six required comfort-critical scenarios authored by task 8.2). A small cooling zone exercising every part of the format: a satisfied/overcooled efficient room (overshoot-close -> 0%), a far-off laggard bottleneck, a throttled mid room, an inactive room, learned VentCurves on two rooms, conventional vents, and a binding safety floor. The matching *.expected.json is REGENERATED from the Python Reference by tools/gen_parity_fixtures (do not hand-edit).",
+  "mode": "cooling",
+  "setpointC": 26.0,
+  "settings": {
+    "safetyFloorPct": 40.0,
+    "conventionalVents": 2,
+    "conventionalOpenPct": 50.0,
+    "inactiveOpenPctSum": 0.0,
+    "inactiveCount": 1,
+    "granularity": 5,
+    "crosscoupling": true,
+    "hysteresisC": 0.3,
+    "airflowLimitedMarginPct": 5.0,
+    "airflowLimitedErrorC": 0.5,
+    "horizonMin": 30.0,
+    "spreadGuardrailC": 1.0,
+    "spreadImprovementDeadbandC": 0.3
+  },
+  "rooms": [
+    {
+      "roomId": "kitchen",
+      "tempC": 25.5,
+      "active": true,
+      "efficiency": 0.40,
+      "leak": 0.10,
+      "currentOpen": 60.0,
+      "ventIds": ["v_kitchen"],
+      "curve": {
+        "breakpoints": [0, 5, 10, 20, 35, 50, 75, 100],
+        "flow": [0.10, 0.45, 0.62, 0.78, 0.90, 0.97, 0.99, 1.0],
+        "counts": [10, 10, 10, 10, 10, 10, 10, 10]
+      }
+    },
+    {
+      "roomId": "bedroom",
+      "tempC": 28.5,
+      "active": true,
+      "efficiency": 0.02,
+      "leak": 0.10,
+      "currentOpen": 100.0,
+      "ventIds": ["v_bedroom"]
+    },
+    {
+      "roomId": "office",
+      "tempC": 27.0,
+      "active": true,
+      "efficiency": 0.08,
+      "leak": 0.12,
+      "currentOpen": 50.0,
+      "ventIds": ["v_office"],
+      "curve": {
+        "breakpoints": [0, 5, 10, 20, 35, 50, 75, 100],
+        "flow": [0.12, 0.40, 0.58, 0.75, 0.88, 0.95, 0.99, 1.0],
+        "counts": [9, 9, 9, 9, 9, 9, 9, 9]
+      }
+    },
+    {
+      "roomId": "garage",
+      "tempC": 30.0,
+      "active": false,
+      "efficiency": 0.05,
+      "leak": 0.10,
+      "currentOpen": 0.0,
+      "ventIds": ["v_garage"]
+    }
+  ],
+  "duct": null
+}

@@ -1,0 +1,18 @@
+{
+  "airflowLimited": [
+    "nursery"
+  ],
+  "combinedOpenPct": 40.0,
+  "floorBinding": false,
+  "id": "overcool-drag-heating",
+  "predictedSpreadC": 3.05,
+  "referenceCommit": "f66a740cdb99f07da2ac4f3ffba1c94bc8aae395",
+  "targets": {
+    "den": 0.0,
+    "nursery": 100.0,
+    "study": 0.0
+  },
+  "tolerance": {
+    "aperturePoints": 1
+  }
+}

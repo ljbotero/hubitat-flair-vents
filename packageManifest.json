@@ -1,40 +1,22 @@
 {
   "packageName": "Flair Vents",
   "author": "Jaime Botero",
-  "version": "0.232",
-  "betaVersion": "0.232",
-  "dateReleased": "2025-08-17",
+  "version": "0.235",
+  "betaVersion": "0.236",
+  "dateReleased": "2026-06-13",
   "minimumHEVersion": "0.0.1",
   "documentationLink": "https://github.com/ljbotero/hubitat-flair-vents/blob/main/README.md",
   "communityLink": "https://community.hubitat.com/t/new-control-flair-vents-with-hubitat-free-open-source-app-and-driver/132728",
-  "apps": [
+  "releaseNotes": "0.235 (stable): Flair Vents integration with the established Dynamic Airflow Balancing strategy and the latest reviewed fixes. Delivered as a single Hubitat Bundle (app + Flair vents driver).",
+  "betaReleaseNotes": "0.236 (beta): Dynamic Airflow Balancing v2 'balance' control strategy (synchronized-convergence allocator, learned per-room/per-vent efficiency, airflow-limited cross-coupling) with an inviolable airflow safety floor, per-room door and occupancy inputs, plus opt-in per-room and zone-summary diagnostic devices. Delivered as a single Hubitat Bundle (app + Flair vents driver + the FlairVentsDabv2 library). Existing installs keep the legacy DAB strategy by default; new installs use 'balance' (parity-gated).",
+  "bundles": [
     {
-      "id": "9c841359-115b-4fdd-8c0d-f054a5140c36",
+      "id": "ea8e04e7-4f58-4ac7-950a-dfafb59cd734",
       "name": "Flair Vents",
-      "namespace": "",
-      "location": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/src/hubitat-flair-vents-app.groovy",
-      "betaLocation": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/src/hubitat-flair-vents-app.groovy",
-      "required": true,
-      "oauth": false,
-      "primary": false
-    }
-  ],
-  "drivers": [
-    {
-      "id": "f13f6c09-59f6-4f68-9219-21b9fc9170a9",
-      "name": "Flair vents",
       "namespace": "bot.flair",
-      "location": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/src/hubitat-flair-vents-driver.groovy",
-      "betaLocation": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/src/hubitat-flair-vents-driver.groovy",
+      "location": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/bundles/flair-vents.v0.235.zip",
+      "betaLocation": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/bundles/flair-vents.v0.236.zip",
       "required": true
-    },
-    {
-      "id": "f13f6c09-59f6-4f68-9219-21b9fc9170b9",
-      "name": "Flair pucks",
-      "namespace": "bot.flair",
-      "location": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/src/hubitat-flair-vents-pucks-driver.groovy",
-      "betaLocation": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/src/hubitat-flair-vents-pucks-driver.groovy",
-      "required": false
     }
   ]
 }

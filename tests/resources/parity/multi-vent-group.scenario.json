@@ -1,0 +1,65 @@
+{
+  "id": "multi-vent-group",
+  "_comment": "R17.6(f) a room served by MULTIPLE smart vents (grouping, R15). The greatroom is one room-group with three physical vents (v_gr_n, v_gr_s, v_gr_e) that all share a single commanded target; the safety floor expands the room into one entry PER physical vent when computing combined open %, so a multi-vent room counts as three devices, not one. A single-vent throttled room (kitchen) and an efficient satisfied room (pantry -> 0%) round out the cooling zone. Expected output REGENERATED from the Python Reference (do not hand-edit).",
+  "mode": "cooling",
+  "setpointC": 24.0,
+  "settings": {
+    "safetyFloorPct": 40.0,
+    "conventionalVents": 1,
+    "conventionalOpenPct": 50.0,
+    "inactiveOpenPctSum": 0.0,
+    "inactiveCount": 1,
+    "granularity": 5,
+    "crosscoupling": true,
+    "hysteresisC": 0.3,
+    "airflowLimitedMarginPct": 5.0,
+    "airflowLimitedErrorC": 0.5,
+    "horizonMin": 30.0,
+    "spreadGuardrailC": 1.0,
+    "spreadImprovementDeadbandC": 0.3
+  },
+  "rooms": [
+    {
+      "roomId": "greatroom",
+      "tempC": 26.5,
+      "active": true,
+      "efficiency": 0.04,
+      "leak": 0.10,
+      "currentOpen": 80.0,
+      "ventIds": ["v_gr_n", "v_gr_s", "v_gr_e"]
+    },
+    {
+      "roomId": "kitchen",
+      "tempC": 24.8,
+      "active": true,
+      "efficiency": 0.09,
+      "leak": 0.12,
+      "currentOpen": 50.0,
+      "ventIds": ["v_kitchen"],
+      "curve": {
+        "breakpoints": [0, 5, 10, 20, 35, 50, 75, 100],
+        "flow": [0.10, 0.45, 0.62, 0.78, 0.90, 0.97, 0.99, 1.0],
+        "counts": [10, 10, 10, 10, 10, 10, 10, 10]
+      }
+    },
+    {
+      "roomId": "pantry",
+      "tempC": 23.0,
+      "active": true,
+      "efficiency": 0.40,
+      "leak": 0.10,
+      "currentOpen": 100.0,
+      "ventIds": ["v_pantry"]
+    },
+    {
+      "roomId": "garage",
+      "tempC": 26.0,
+      "active": false,
+      "efficiency": 0.05,
+      "leak": 0.10,
+      "currentOpen": 0.0,
+      "ventIds": ["v_garage"]
+    }
+  ],
+  "duct": null
+}

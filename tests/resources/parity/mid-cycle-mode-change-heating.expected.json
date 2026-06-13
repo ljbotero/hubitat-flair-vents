@@ -1,0 +1,19 @@
+{
+  "airflowLimited": [
+    "den"
+  ],
+  "combinedOpenPct": 40.0,
+  "floorBinding": true,
+  "id": "mid-cycle-mode-change-heating",
+  "predictedSpreadC": 1.5,
+  "referenceCommit": "f66a740cdb99f07da2ac4f3ffba1c94bc8aae395",
+  "targets": {
+    "closet": 40.0,
+    "den": 100.0,
+    "living": 0.0,
+    "study": 0.0
+  },
+  "tolerance": {
+    "aperturePoints": 1
+  }
+}

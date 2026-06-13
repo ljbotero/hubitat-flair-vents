@@ -1,0 +1,69 @@
+{
+  "id": "all-satisfied-heating",
+  "_comment": "R17.6(c) heating mirror of all-satisfied-running. Every active room has warmed past the setpoint -> all close to 0%, and the floor holds the minimum via the last-resort inactive reopen so floorBinding is true. Temps mirrored as 2*setpoint - tempCooling. Expected output REGENERATED from the Python Reference (do not hand-edit).",
+  "mode": "heating",
+  "setpointC": 24.0,
+  "settings": {
+    "safetyFloorPct": 40.0,
+    "conventionalVents": 0,
+    "conventionalOpenPct": 50.0,
+    "inactiveOpenPctSum": 0.0,
+    "inactiveCount": 2,
+    "granularity": 5,
+    "crosscoupling": true,
+    "hysteresisC": 0.3,
+    "airflowLimitedMarginPct": 5.0,
+    "airflowLimitedErrorC": 0.5,
+    "horizonMin": 30.0,
+    "spreadGuardrailC": 1.0,
+    "spreadImprovementDeadbandC": 0.3
+  },
+  "rooms": [
+    {
+      "roomId": "arctic",
+      "tempC": 25.0,
+      "active": true,
+      "efficiency": 0.30,
+      "leak": 0.10,
+      "currentOpen": 50.0,
+      "ventIds": ["v_arctic"]
+    },
+    {
+      "roomId": "breeze",
+      "tempC": 25.4,
+      "active": true,
+      "efficiency": 0.20,
+      "leak": 0.10,
+      "currentOpen": 50.0,
+      "ventIds": ["v_breeze"]
+    },
+    {
+      "roomId": "cove",
+      "tempC": 24.8,
+      "active": true,
+      "efficiency": 0.15,
+      "leak": 0.12,
+      "currentOpen": 40.0,
+      "ventIds": ["v_cove"]
+    },
+    {
+      "roomId": "loft",
+      "tempC": 23.5,
+      "active": false,
+      "efficiency": 0.05,
+      "leak": 0.10,
+      "currentOpen": 0.0,
+      "ventIds": ["v_loft"]
+    },
+    {
+      "roomId": "attic",
+      "tempC": 23.3,
+      "active": false,
+      "efficiency": 0.05,
+      "leak": 0.10,
+      "currentOpen": 0.0,
+      "ventIds": ["v_attic"]
+    }
+  ],
+  "duct": null
+}

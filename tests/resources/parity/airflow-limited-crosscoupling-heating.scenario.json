@@ -1,0 +1,70 @@
+{
+  "id": "airflow-limited-crosscoupling-heating",
+  "_comment": "R17.6(b) heating mirror of airflow-limited-crosscoupling (symmetric about the setpoint). The laggard (loft) has an early-knee curve and is far below setpoint, pinning at its knee (airflow-limited); cross-coupling drives at/past-setpoint rooms toward 0%. Temps mirrored as 2*setpoint - tempCooling. Expected output REGENERATED from the Python Reference (do not hand-edit).",
+  "mode": "heating",
+  "setpointC": 24.0,
+  "settings": {
+    "safetyFloorPct": 40.0,
+    "conventionalVents": 2,
+    "conventionalOpenPct": 50.0,
+    "inactiveOpenPctSum": 0.0,
+    "inactiveCount": 0,
+    "granularity": 5,
+    "crosscoupling": true,
+    "hysteresisC": 0.3,
+    "airflowLimitedMarginPct": 5.0,
+    "airflowLimitedErrorC": 0.5,
+    "horizonMin": 30.0,
+    "spreadGuardrailC": 1.0,
+    "spreadImprovementDeadbandC": 0.3
+  },
+  "rooms": [
+    {
+      "roomId": "loft",
+      "tempC": 21.0,
+      "active": true,
+      "efficiency": 0.05,
+      "leak": 0.10,
+      "currentOpen": 50.0,
+      "ventIds": ["v_loft"],
+      "curve": {
+        "breakpoints": [0, 5, 10, 20, 35, 50, 75, 100],
+        "flow": [0.10, 0.55, 0.80, 0.95, 0.99, 1.0, 1.0, 1.0],
+        "counts": [12, 12, 12, 12, 12, 12, 12, 12]
+      }
+    },
+    {
+      "roomId": "parlor",
+      "tempC": 24.8,
+      "active": true,
+      "efficiency": 0.40,
+      "leak": 0.10,
+      "currentOpen": 60.0,
+      "ventIds": ["v_parlor"],
+      "curve": {
+        "breakpoints": [0, 5, 10, 20, 35, 50, 75, 100],
+        "flow": [0.10, 0.45, 0.62, 0.78, 0.90, 0.97, 0.99, 1.0],
+        "counts": [10, 10, 10, 10, 10, 10, 10, 10]
+      }
+    },
+    {
+      "roomId": "hall",
+      "tempC": 24.2,
+      "active": true,
+      "efficiency": 0.10,
+      "leak": 0.12,
+      "currentOpen": 40.0,
+      "ventIds": ["v_hall"]
+    },
+    {
+      "roomId": "shed",
+      "tempC": 23.0,
+      "active": false,
+      "efficiency": 0.05,
+      "leak": 0.10,
+      "currentOpen": 0.0,
+      "ventIds": ["v_shed"]
+    }
+  ],
+  "duct": null
+}

@@ -1,4 +1,3 @@
-package bot.flair
 
 // Vent Operations Tests
 // Tests for vent control operations and validations
@@ -12,7 +11,7 @@ import spock.lang.Specification
 
 class VentOperationsTest extends Specification {
 
-  private static final File APP_FILE = new File('src/hubitat-flair-vents-app.groovy')
+  private static final String APP_FILE = Dabv2AppHarness.combinedAppText()
   private static final List VALIDATION_FLAGS = [
             Flags.DontValidateMetadata,
             Flags.DontValidatePreferences,
@@ -27,6 +26,7 @@ class VentOperationsTest extends Specification {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [flairAccessToken: 'test-token']
+      _ * getAtomicState() >> [thermostat1Mode: 'auto', activeRequests: 0, lastRequestTime: 0, requestCounts: [:], stuckRequestCounter: 0]
       _ * sendEvent(_ as Object, _ as Map) >> null
     }
     def mockDevice = [
@@ -54,6 +54,7 @@ class VentOperationsTest extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [flairAccessToken: 'test-token']
+      _ * getAtomicState() >> [thermostat1Mode: 'auto', activeRequests: 0, lastRequestTime: 0, requestCounts: [:], stuckRequestCounter: 0]
       _ * getLog() >> log
       _ * sendEvent(_ as Object, _ as Map) >> null
     }
@@ -82,6 +83,7 @@ class VentOperationsTest extends Specification {
     final log = new CapturingLog()
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [flairAccessToken: 'test-token']
+      _ * getAtomicState() >> [thermostat1Mode: 'auto', activeRequests: 0, lastRequestTime: 0, requestCounts: [:], stuckRequestCounter: 0]
       _ * getLog() >> log
       _ * sendEvent(_ as Object, _ as Map) >> null
     }
@@ -109,6 +111,7 @@ class VentOperationsTest extends Specification {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [flairAccessToken: 'test-token']
+      _ * getAtomicState() >> [thermostat1Mode: 'auto', activeRequests: 0, lastRequestTime: 0, requestCounts: [:], stuckRequestCounter: 0]
     }
     def mockDevice = [
       currentValue: { prop -> prop == 'percent-open' ? 75 : null },
@@ -134,6 +137,7 @@ class VentOperationsTest extends Specification {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [flairAccessToken: 'test-token']
+      _ * getAtomicState() >> [thermostat1Mode: 'auto', activeRequests: 0, lastRequestTime: 0, requestCounts: [:], stuckRequestCounter: 0]
     }
     def mockDevice = [
       currentValue: { prop -> 
@@ -165,6 +169,7 @@ class VentOperationsTest extends Specification {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [flairAccessToken: 'test-token']
+      _ * getAtomicState() >> [thermostat1Mode: 'auto', activeRequests: 0, lastRequestTime: 0, requestCounts: [:], stuckRequestCounter: 0]
     }
     def mockDevice = [
       currentValue: { prop -> 
@@ -196,6 +201,7 @@ class VentOperationsTest extends Specification {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [flairAccessToken: 'test-token']
+      _ * getAtomicState() >> [thermostat1Mode: 'auto', activeRequests: 0, lastRequestTime: 0, requestCounts: [:], stuckRequestCounter: 0]
     }
     def mockDevice = [
       currentValue: { prop -> 

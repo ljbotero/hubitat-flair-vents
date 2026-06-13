@@ -1,0 +1,17 @@
+{
+  "airflowLimited": [
+    "main"
+  ],
+  "combinedOpenPct": 53.333333,
+  "floorBinding": true,
+  "id": "single-active-room-heating",
+  "predictedSpreadC": 0.0,
+  "referenceCommit": "f66a740cdb99f07da2ac4f3ffba1c94bc8aae395",
+  "targets": {
+    "main": 100.0,
+    "spare1": 10.0
+  },
+  "tolerance": {
+    "aperturePoints": 1
+  }
+}

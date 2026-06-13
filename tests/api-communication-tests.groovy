@@ -1,4 +1,3 @@
-package bot.flair
 
 // API Communication Tests
 // Tests for HTTP operations, async handlers, and API interactions
@@ -12,7 +11,7 @@ import spock.lang.Specification
 
 class ApiCommunicationTest extends Specification {
 
-  private static final File APP_FILE = new File('src/hubitat-flair-vents-app.groovy')
+  private static final String APP_FILE = Dabv2AppHarness.combinedAppText()
   private static final List VALIDATION_FLAGS = [
             Flags.DontValidateMetadata,
             Flags.DontValidatePreferences,
@@ -125,6 +124,7 @@ class ApiCommunicationTest extends Specification {
     setup:
     AppExecutor executorApi = Mock(AppExecutor) {
       _ * getState() >> [activeRequests: 0, lastRequestTime: 0, requestCounts: [:], stuckRequestCounter: 0]
+      _ * getAtomicState() >> [activeRequests: 0, lastRequestTime: 0, requestCounts: [:], stuckRequestCounter: 0]
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi, 'validationFlags': VALIDATION_FLAGS)

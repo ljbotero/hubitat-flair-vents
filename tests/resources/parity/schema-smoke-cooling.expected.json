@@ -1,0 +1,18 @@
+{
+  "airflowLimited": [
+    "bedroom"
+  ],
+  "combinedOpenPct": 40.0,
+  "floorBinding": false,
+  "id": "schema-smoke-cooling",
+  "predictedSpreadC": 1.9,
+  "referenceCommit": "f66a740cdb99f07da2ac4f3ffba1c94bc8aae395",
+  "targets": {
+    "bedroom": 100.0,
+    "kitchen": 0.0,
+    "office": 0.0
+  },
+  "tolerance": {
+    "aperturePoints": 1
+  }
+}

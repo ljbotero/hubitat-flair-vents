@@ -1,0 +1,65 @@
+{
+  "id": "mid-cycle-mode-change-heating",
+  "_comment": "R17.6(e) the HEATING 'post-flip' half of the mid-cycle mode-change pair. Identical topology and temperatures to mid-cycle-mode-change; only the mode flips to 'heating'. After the flip, den (20.5) now needs heating and living (23.5) is satisfied -- the inverse of the cooling half -- demonstrating the allocation re-anchors and reverses direction on a mid-cycle mode change (R8.8). Expected output REGENERATED from the Python Reference (do not hand-edit).",
+  "mode": "heating",
+  "setpointC": 22.0,
+  "settings": {
+    "safetyFloorPct": 40.0,
+    "conventionalVents": 2,
+    "conventionalOpenPct": 50.0,
+    "inactiveOpenPctSum": 0.0,
+    "inactiveCount": 1,
+    "granularity": 5,
+    "crosscoupling": true,
+    "hysteresisC": 0.3,
+    "airflowLimitedMarginPct": 5.0,
+    "airflowLimitedErrorC": 0.5,
+    "horizonMin": 30.0,
+    "spreadGuardrailC": 1.0,
+    "spreadImprovementDeadbandC": 0.3
+  },
+  "rooms": [
+    {
+      "roomId": "living",
+      "tempC": 23.5,
+      "active": true,
+      "efficiency": 0.06,
+      "leak": 0.10,
+      "currentOpen": 80.0,
+      "ventIds": ["v_living"]
+    },
+    {
+      "roomId": "den",
+      "tempC": 20.5,
+      "active": true,
+      "efficiency": 0.10,
+      "leak": 0.10,
+      "currentOpen": 40.0,
+      "ventIds": ["v_den"]
+    },
+    {
+      "roomId": "study",
+      "tempC": 22.6,
+      "active": true,
+      "efficiency": 0.08,
+      "leak": 0.12,
+      "currentOpen": 50.0,
+      "ventIds": ["v_study"],
+      "curve": {
+        "breakpoints": [0, 5, 10, 20, 35, 50, 75, 100],
+        "flow": [0.10, 0.45, 0.62, 0.78, 0.90, 0.97, 0.99, 1.0],
+        "counts": [10, 10, 10, 10, 10, 10, 10, 10]
+      }
+    },
+    {
+      "roomId": "closet",
+      "tempC": 23.0,
+      "active": false,
+      "efficiency": 0.05,
+      "leak": 0.10,
+      "currentOpen": 0.0,
+      "ventIds": ["v_closet"]
+    }
+  ],
+  "duct": null
+}

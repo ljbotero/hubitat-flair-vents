@@ -1,6 +1,7 @@
 plugins {
     id 'groovy'
     id 'jacoco'
+    id 'codenarc'
 }
 
 // Set Java compatibility
@@ -24,7 +25,14 @@ compileTestGroovy {
 sourceSets {
     main {
         groovy {
-            srcDirs = ['src']
+            // libraries/ = PURE DAB v2 methods-only library (flair-vents-dabv2.groovy),
+            //              compiled on the JVM by the off-device harness (R18.1/R18.2).
+            // src/ is intentionally EXCLUDED: the app carries a Hubitat `#include`
+            // directive (and the drivers are loaded as sandbox resources at test time),
+            // neither of which `groovyc` can parse. App/driver specs load their source
+            // through hubitat_ci (the app via Dabv2AppHarness.combinedAppText(), which
+            // emulates the hub's #include by inlining the library).
+            srcDirs = ['libraries']
         }
     }
     test {
@@ -131,6 +139,26 @@ repositories {
     // hubitat_ci repository
     maven {
         url 'https://biocomp.pkgs.visualstudio.com/HubitatCiRelease/_packaging/hubitat_ci_feed@Release/maven/v1'
+    }
+}
+
+// CodeNarc quality gate (task 1.3, R18.6 / R18.4) — npm-free reproduction of the
+// npm-groovy-lint baseline. Auto-creates `codenarcMain` (src + libraries) and
+// `codenarcTest` (tests). Run: ./gradlew codenarcMain codenarcTest
+codenarc {
+    toolVersion = '3.6.0'
+    configFile = file('config/codenarc/codenarc.groovy')
+    // Gate is "no net increase per modified file vs. docs/quality-baseline.md"
+    // (R18.4), not a hard zero — the report is the source of truth, so don't
+    // fail the build on findings.
+    ignoreFailures = true
+}
+
+tasks.withType(CodeNarc).configureEach {
+    reports {
+        html.required = true
+        xml.required = true
+        text.required = true
     }
 }
 

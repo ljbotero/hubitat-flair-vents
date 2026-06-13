@@ -10,6 +10,10 @@ Harness the power of Dynamic Airflow Balancing to refine air distribution throug
 - **Reduced adjustments** mean less wear on vent motors and quieter operation.
 - **Minimum airflow compliance** to prevent HVAC issues from insufficient airflow, particularly useful when integrating Flair Smart Vents with traditional vents.
 
+Two strategies are available:
+- **Legacy DAB** — the original strategy; the default for existing installs.
+- **DAB v2 "balance"** — a synchronized-convergence allocator with learned per-room/per-vent efficiency, airflow-limited cross-coupling, an inviolable airflow safety floor, and optional per-room door/occupancy inputs. It is the default for new installs and is parity-gated against a validated reference implementation. DAB v2 also adds opt-in per-room and zone-summary diagnostic devices.
+
 ### Enhanced Vent Control and Combined Airflow Management
 This integration doesn't just enable remote control over each Flair vent; it smartly manages airflow to ensure your HVAC system operates efficiently without damage. Key features include:
 - **Precise control** over each vent, allowing you to set exact open levels for customized airflow.
@@ -28,11 +32,19 @@ To automate room activity within Rule Machine:
 
 ## Getting Started
 
-### Initial Setup
+### Install with Hubitat Package Manager (recommended)
+The integration ships as a single Hubitat **Bundle** (app + Flair vents driver + Flair pucks driver + the DAB v2 library), so there are no separate files to paste in.
+1. Install [Hubitat Package Manager](https://community.hubitat.com/t/release-hubitat-package-manager-hpm/94471) if you don't already have it.
+2. In HPM, choose **Install > Search by Keywords**, search for **Flair Vents**, and install the package.
+3. To try DAB v2 before it becomes the stable default, use HPM's **Beta / Early Release** option when installing or updating — this pulls the DAB v2 bundle.
+4. Open the **Flair Vents** app, enter your API credentials, and discover devices (see below).
+
+### Manual install (alternative)
 1. **Install Flair Vent Driver**: In Hubitat, navigate to **Drivers Code > New Driver**, paste the contents of `hubitat-flair-vents-driver.groovy`, and save.
-2. **Install Flair App**: Access **Apps Code > New App**, copy and paste `hubitat-flair-vents-app.groovy`, click save, and then **Add User App** to install the Flair integration.
-3. **Configure API Credentials**: Request and input Flair API credentials (Client ID and Client Secret) within the Hubitat Flair app setup interface.
-4. **Discover Devices**: Initiate device discovery through the app to add your Flair vents.
+2. **Install Flair Pucks Driver**: Repeat under **Drivers Code > New Driver** with `hubitat-flair-vents-pucks-driver.groovy`.
+3. **Install Flair App**: Access **Apps Code > New App**, copy and paste `hubitat-flair-vents-app.groovy`, click save, and then **Add User App** to install the Flair integration. (For DAB v2, also add the `FlairVentsDabv2` library under **Libraries Code**, since the app pulls it via `#include`.)
+4. **Configure API Credentials**: Request and input Flair API credentials (Client ID and Client Secret) within the Hubitat Flair app setup interface.
+5. **Discover Devices**: Initiate device discovery through the app to add your Flair vents.
 
 ## Using The Integration
 Control and automation are at your fingertips. Each Flair vent appears as an individual device within Hubitat. You can:
@@ -47,10 +59,10 @@ This project includes a comprehensive test suite covering all critical algorithm
 
 ```bash
 # Run all tests
-gradle test
+./gradlew test
 
 # Run tests with coverage report
-gradle clean test jacocoTestReport
+./gradlew clean test jacocoTestReport
 
 # View test results
 open build/reports/tests/test/index.html
@@ -59,7 +71,9 @@ open build/reports/jacoco/test/html/index.html
 
 ### Test Coverage
 
-- **50+ test cases** covering Dynamic Airflow Balancing algorithms
+- **500+ test cases** covering both Dynamic Airflow Balancing strategies
+- **Property-based tests** asserting the DAB v2 correctness properties (seeded, reproducible)
+- **Parity tests** validating DAB v2 against a reference implementation via shared fixtures
 - **Mathematical precision** validation for temperature calculations
 - **Edge case testing** for robust error handling
 - **Multi-room scenarios** with realistic HVAC data
@@ -72,8 +86,11 @@ See [TESTING.md](TESTING.md) for detailed testing documentation.
 The integration features advanced **Dynamic Airflow Balancing (DAB)** algorithms:
 - Temperature change rate learning per room
 - Predictive vent positioning using exponential models
-- Minimum airflow safety constraints
+- Minimum airflow safety constraints (inviolable safety floor)
 - Rolling average calculations for efficiency optimization
+- DAB v2 synchronized-convergence allocation with airflow-limited cross-coupling
+
+See [architecture.md](architecture.md) for the architecture and best-practices reference.
 
 ## Support and Community
 Dive deeper into documentation, engage with community discussions, and receive support on the [Hubitat community forum thread](https://community.hubitat.com/t/new-control-flair-vents-with-hubitat-free-open-source-app-and-driver/132728).

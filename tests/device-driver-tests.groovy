@@ -1,4 +1,3 @@
-package bot.flair
 
 // Device Driver Tests
 // Tests for Flair Vent device driver functionality

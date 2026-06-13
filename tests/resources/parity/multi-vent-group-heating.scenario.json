@@ -1,0 +1,65 @@
+{
+  "id": "multi-vent-group-heating",
+  "_comment": "R17.6(f) heating mirror of multi-vent-group. The greatroom is a single room-group served by three smart vents sharing one target; the floor counts each physical vent. Temps mirrored as 2*setpoint - tempCooling. Expected output REGENERATED from the Python Reference (do not hand-edit).",
+  "mode": "heating",
+  "setpointC": 24.0,
+  "settings": {
+    "safetyFloorPct": 40.0,
+    "conventionalVents": 1,
+    "conventionalOpenPct": 50.0,
+    "inactiveOpenPctSum": 0.0,
+    "inactiveCount": 1,
+    "granularity": 5,
+    "crosscoupling": true,
+    "hysteresisC": 0.3,
+    "airflowLimitedMarginPct": 5.0,
+    "airflowLimitedErrorC": 0.5,
+    "horizonMin": 30.0,
+    "spreadGuardrailC": 1.0,
+    "spreadImprovementDeadbandC": 0.3
+  },
+  "rooms": [
+    {
+      "roomId": "greatroom",
+      "tempC": 21.5,
+      "active": true,
+      "efficiency": 0.04,
+      "leak": 0.10,
+      "currentOpen": 80.0,
+      "ventIds": ["v_gr_n", "v_gr_s", "v_gr_e"]
+    },
+    {
+      "roomId": "kitchen",
+      "tempC": 23.2,
+      "active": true,
+      "efficiency": 0.09,
+      "leak": 0.12,
+      "currentOpen": 50.0,
+      "ventIds": ["v_kitchen"],
+      "curve": {
+        "breakpoints": [0, 5, 10, 20, 35, 50, 75, 100],
+        "flow": [0.10, 0.45, 0.62, 0.78, 0.90, 0.97, 0.99, 1.0],
+        "counts": [10, 10, 10, 10, 10, 10, 10, 10]
+      }
+    },
+    {
+      "roomId": "pantry",
+      "tempC": 25.0,
+      "active": true,
+      "efficiency": 0.40,
+      "leak": 0.10,
+      "currentOpen": 100.0,
+      "ventIds": ["v_pantry"]
+    },
+    {
+      "roomId": "garage",
+      "tempC": 22.0,
+      "active": false,
+      "efficiency": 0.05,
+      "leak": 0.10,
+      "currentOpen": 0.0,
+      "ventIds": ["v_garage"]
+    }
+  ],
+  "duct": null
+}
