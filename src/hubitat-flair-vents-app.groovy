@@ -26,6 +26,28 @@ import groovy.json.JsonOutput
 // Constants and Configuration
 // ------------------------------
 
+// HPM channel version mirrors (R7.2). These MUST stay consistent with
+// packageManifest.json (`version` / `betaVersion`) and the bundles/ artifact
+// filenames (flair-vents.v<version>.zip / flair-vents.v<betaVersion>.zip).
+// The displayed version is DERIVED from these via dabv2DeriveDisplayVersion so
+// a null/missing field can never render "vnullbeta" (R7.8) — it falls back to
+// VERSION_FALLBACK_LABEL instead.
+@Field static final String STABLE_VERSION = '0.235'
+@Field static final String BETA_VERSION = '0.236'
+// The channel this build ships on: the v0.236 bundle is the beta/early-release
+// artifact, so it derives its displayed version from BETA_VERSION.
+@Field static final String RELEASE_CHANNEL = 'beta'
+// Documented default version label used only when a manifest field is
+// null/missing/blank, so the UI never shows a null-derived "vnullbeta" (R7.8).
+@Field static final String VERSION_FALLBACK_LABEL = '0.0.0-dev'
+
+// App version string, surfaced in the App UI (config page header) so it can be
+// reported in support requests (R7.1, R7.2, R7.5). Mirrors BETA_VERSION (this
+// build ships on the beta channel). The channel-aware, fallback-safe derivation
+// that guarantees no null-derived "vnullbeta" string is appDisplayVersion()
+// (R7.8); this literal stays equal to that derived value.
+@Field static final String APP_VERSION = '0.236'
+
 // Base URL for Flair API endpoints.
 @Field static final String BASE_URL = 'https://api.flair.co'
 
@@ -36,6 +58,16 @@ import groovy.json.JsonOutput
 
 // Content-Type header for API requests.
 @Field static final String CONTENT_TYPE = 'application/json'
+
+// Channel-aware display version, derived from the manifest-mirroring constants
+// via the pure dabv2DeriveDisplayVersion helper. A null/missing channel field
+// falls back to the documented VERSION_FALLBACK_LABEL, so this NEVER returns a
+// null-derived "vnullbeta" string (R7.2 / R7.8). Surfaced wherever the running
+// version is reported.
+String appDisplayVersion() {
+  return dabv2DeriveDisplayVersion(
+    [version: STABLE_VERSION, betaVersion: BETA_VERSION], RELEASE_CHANNEL, VERSION_FALLBACK_LABEL)
+}
 
 // HVAC mode constants.
 @Field static final String COOLING = 'cooling'
@@ -147,6 +179,15 @@ import groovy.json.JsonOutput
 // Maximum concurrent HTTP requests to prevent API overload.
 @Field static final Integer MAX_CONCURRENT_REQUESTS = 8
 
+// R4.19 (Task 6.8): stuck concurrency-counter timeout. If the in-flight request
+// counter sits wedged at MAX_CONCURRENT_REQUESTS for longer than this window with
+// no progress (no increment/decrement updating atomicState.requestTrackingTs),
+// initRequestTracking() resets it to 0 so the request path cannot wedge
+// permanently. Chosen at 5 minutes: comfortably longer than the 5 s HTTP timeout
+// (HTTP_TIMEOUT_SECS) so a legitimately busy burst is never reset prematurely,
+// yet well under an hour so a real wedge recovers promptly.
+@Field static final long REQUEST_TRACKING_STUCK_MS = 300_000L
+
 // Maximum number of retry attempts for async API calls.
 @Field static final Integer MAX_API_RETRY_ATTEMPTS = 5
 
@@ -186,10 +227,23 @@ import groovy.json.JsonOutput
 // excluded from balancing AND from the combined-flow computation.
 @Field static final String DABV2_UNASSIGNED_VENT_RULE = 'excluded-from-balancing-and-combined-flow'
 
+// Zone-iterating evaluate chunking (R2.7, R8.26; design §5.3). The zoned
+// evaluate loop processes a bounded number of zones per invocation and continues
+// the remainder on a fresh scheduled invocation so a home with many zones never
+// blocks past the Hubitat ~20s method budget.
+@Field static final Integer DABV2_ZONES_PER_CHUNK = 4
+@Field static final Long DABV2_ZONE_CHUNK_DELAY_MS = 100L
+
 // `state` key under which the compact schema-v2 learned model is persisted
 // (R12.1). The app owns this read/write seam; the pure Dabv2ModelIo module does
 // the encode/decode/migrate/bound math.
 @Field static final String DABV2_MODEL_STATE_KEY = 'dabv2LearnedModel'
+
+// Sentinel scope value for the user-initiated DAB reset (R7.3/R7.14) that selects
+// ALL zones rather than a single zone id; any other scope value is treated as a
+// single zone id.
+@Field static final String DABV2_RESET_SCOPE_ALL = 'all-zones'
+
 
 // Numeric config defaults + safe ranges (R19.2; design Configuration table R19).
 @Field static final BigDecimal SAFETY_FLOOR_DEFAULT = 40.0
@@ -207,6 +261,14 @@ import groovy.json.JsonOutput
 @Field static final BigDecimal AIRFLOW_LIMITED_ERROR_DEFAULT = 0.5
 @Field static final BigDecimal AIRFLOW_LIMITED_ERROR_MIN = 0.1
 @Field static final BigDecimal AIRFLOW_LIMITED_ERROR_MAX = 3.0
+// Per-room target/offset config-boundary bounds (R3.4/R3.5/R3.16). Mirror the
+// pure resolver defaults so UI- and Rule-Machine-supplied values clamp identically.
+@Field static final BigDecimal PER_ROOM_ABS_MIN_C = 10.0
+@Field static final BigDecimal PER_ROOM_ABS_MAX_C = 32.0
+@Field static final BigDecimal PER_ROOM_ABS_DEFAULT_C = 21.0
+@Field static final BigDecimal PER_ROOM_OFFSET_MIN_C = -5.0
+@Field static final BigDecimal PER_ROOM_OFFSET_MAX_C = 5.0
+@Field static final BigDecimal PER_ROOM_OFFSET_DEFAULT_C = 0.0
 
 // === DAB v2 observability surfaces (Task 9.8; R13/R14) ===
 // Per-room diagnostic child devices group each room's own values VERTICALLY
@@ -228,6 +290,29 @@ import groovy.json.JsonOutput
 @Field static final long DABV2_COUNTER_WINDOW_MS = 86_400_000L
 @Field static final Integer CONVENTIONAL_VENTS_DEFAULT = 0
 @Field static final BigDecimal CONVENTIONAL_OPEN_DEFAULT = 100.0
+// R6 circulation (fan-only) default open percentage (D4). Range/clamping is
+// introduced in task 8.4; this default keeps the feature off by default (the
+// `circulationEnabled` flag defaults false) while letting the orchestration read
+// the percentage defensively.
+@Field static final Integer CIRCULATION_OPEN_DEFAULT = 50
+// R6.5/R6.6 circulation open percentage validated range (clamped to the nearest
+// bound). The documented default above sits inside this range.
+@Field static final Integer CIRCULATION_OPEN_MIN = 10
+@Field static final Integer CIRCULATION_OPEN_MAX = 100
+// R6.7/R6.8 circulation debounce (seconds): documented default 60 s, validated
+// range 0–600 s (clamped to the nearest bound). Suppresses short-burst
+// circulation thrash via shouldApplyCirculationChange.
+@Field static final Integer CIRCULATION_DEBOUNCE_DEFAULT = 60
+@Field static final Integer CIRCULATION_DEBOUNCE_MIN = 0
+@Field static final Integer CIRCULATION_DEBOUNCE_MAX = 600
+// R7.4 configurable minimum vent opening (D3 = global with optional per-vent).
+// Documented default 0 % (feature neutral on upgrade — no vent is forced open),
+// validated range 0–100 % (clamped to the nearest bound). Per-vent overrides
+// live in the zone slice (state.zones[zoneId].minVentOpen) and win over this
+// global value; applied before the final sfApply so the floor still wins.
+@Field static final Integer MIN_VENT_OPEN_DEFAULT = 0
+@Field static final Integer MIN_VENT_OPEN_MIN = 0
+@Field static final Integer MIN_VENT_OPEN_MAX = 100
 @Field static final BigDecimal CONVENTIONAL_OPEN_MIN = 0.0
 @Field static final BigDecimal CONVENTIONAL_OPEN_MAX = 100.0
 @Field static final Integer ACTIVE_INTERVAL_DEFAULT = 3
@@ -272,143 +357,26 @@ preferences {
   page(name: 'efficiencyDataPage')
 }
 
+// mainPage is intentionally a thin orchestrator that delegates each section to
+// its own helper method. Hubitat textually merges the #include'd library into
+// this app and recompiles the whole unit on every save; the sandbox AST
+// transform is disproportionately expensive for very large single methods, so
+// keeping each page section small keeps the save/compile fast. The helper
+// methods call section()/input()/paragraph() against the page builder exactly
+// like renderZoneConfigSections() already does.
 def mainPage() {
   dynamicPage(name: 'mainPage', title: 'Setup', install: true, uninstall: true) {
-    section('OAuth Setup') {
-      input name: 'clientId', type: 'text', title: 'Client Id (OAuth 2.0)', required: true, submitOnChange: true
-      input name: 'clientSecret', type: 'password', title: 'Client Secret OAuth 2.0', required: true, submitOnChange: true
-      paragraph '<small><b>Obtain your client Id and secret from ' +
-                "<a href='https://forms.gle/VohiQjWNv9CAP2ASA' target='_blank'>here</a></b></small>"
-      
-      if (settings?.clientId && settings?.clientSecret) {
-        if (!state.flairAccessToken && !state.authInProgress) {
-          state.authInProgress = true
-          state.remove('authError')  // Clear any previous error when starting new auth
-          runIn(2, 'autoAuthenticate')
-        }
-        
-        if (state.flairAccessToken && !state.authError) {
-          paragraph "<span style='color: green;'>✓ Authenticated successfully</span>"
-        } else if (state.authError && !state.authInProgress) {
-          section {
-            paragraph "<span style='color: red;'>${state.authError}</span>"
-            input name: 'retryAuth', type: 'button', title: 'Retry Authentication', submitOnChange: true
-            paragraph "<small>If authentication continues to fail, verify your credentials are correct and try again.</small>"
-          }
-        } else if (state.authInProgress) {
-          paragraph "<span style='color: orange;'>⏳ Authenticating... Please wait.</span>"
-          paragraph "<small>This may take 10-15 seconds. The page will refresh automatically when complete.</small>"
-        } else {
-          paragraph "<span style='color: orange;'>Ready to authenticate...</span>"
-        }
-      }
+    section {
+      paragraph "<small><b>Hubitat Integration for Flair Smart Vents</b> — version ${APP_VERSION}</small>"
     }
+    oauthSetupSection()
 
     if (state.flairAccessToken) {
-      section('Device Discovery') {
-        input name: 'discoverDevices', type: 'button', title: 'Discover', submitOnChange: true
-        input name: 'structureId', type: 'text', title: 'Home Id (SID)', required: false, submitOnChange: true
-      }
+      deviceDiscoverySection()
       listDiscoveredDevices()
-
-      section('<h2>Dynamic Airflow Balancing</h2>') {
-        input name: 'dabEnabled', type: 'bool', title: 'Use Dynamic Airflow Balancing', defaultValue: false, submitOnChange: true
-        if (dabEnabled) {
-          input name: 'thermostat1', type: 'capability.thermostat', title: 'Choose Thermostat for Vents', multiple: false, required: true
-          input name: 'thermostat1TempUnit', type: 'enum', title: 'Units used by Thermostat', defaultValue: 2,
-                options: [1: 'Celsius (°C)', 2: 'Fahrenheit (°F)']
-          input name: 'thermostat1AdditionalStandardVents', type: 'number', title: 'Count of conventional Vents', defaultValue: 0, submitOnChange: true
-          paragraph '<small>Enter the total number of standard (non-Flair) adjustable vents in the home associated ' +
-                    'with the chosen thermostat, excluding Flair vents. This ensures the combined airflow does not drop ' +
-                    'below a specified percent to prevent HVAC issues.</small>'
-          input name: 'thermostat1CloseInactiveRooms', type: 'bool', title: 'Close vents on inactive rooms', defaultValue: true, submitOnChange: true
-
-          input name: 'controlStrategy', type: 'enum', title: 'Control Strategy',
-                options: dabV2ControlStrategyOptions(),
-                defaultValue: dabV2NewInstallDefaultStrategy(), submitOnChange: true
-          input name: 'safetyFloorPct', type: 'number', title: 'Airflow safety floor (%)', defaultValue: 40
-          input name: 'spreadGuardrailC', type: 'decimal', title: 'Spread guardrail (C)', defaultValue: 1.0
-          input name: 'spreadImprovementDeadbandC', type: 'decimal', title: 'Spread improvement deadband (C)', defaultValue: 0.3
-          input name: 'crosscouplingEnabled', type: 'bool', title: 'Enable duct cross-coupling', defaultValue: true
-          input name: 'airflowLimitedMarginPct', type: 'number', title: 'Airflow-limited margin (%)', defaultValue: 5
-          input name: 'airflowLimitedErrorC', type: 'decimal', title: 'Airflow-limited error threshold (C)', defaultValue: 0.5
-          input name: 'conventionalOpenPct', type: 'number', title: 'Conventional vent assumed open (%)', defaultValue: 100
-          input name: 'activeIntervalMin', type: 'number', title: 'Active evaluation interval (min)', defaultValue: 3
-          input name: 'idleIntervalMin', type: 'number', title: 'Idle evaluation interval (min)', defaultValue: 10
-          input name: 'shortCycleGapMin', type: 'number', title: 'Short-cycle idle gap (min)', defaultValue: 10
-          input name: 'preAdjustDwellMin', type: 'number', title: 'Pre-adjust minimum idle dwell (min)', defaultValue: 5
-          input name: 'preAdjustTriggerC', type: 'decimal', title: 'Pre-adjust trigger threshold (C)', defaultValue: 1.0
-          input name: 'outdoorTempSource', type: 'capability.temperatureMeasurement', title: 'Outdoor temp source (optional)', required: false
-          input name: 'doorSensor', type: 'capability.contactSensor', title: 'Whole-home door sensor (optional, fallback)', required: false
-          input name: 'occupancySource', type: 'capability.presenceSensor', title: 'Occupancy source (optional, fallback)', required: false
-          // Per-room door sensors (R11.6): an open door only affects its OWN
-          // room's conditioning rate, so each discovered room may map its own
-          // contact sensor. Rooms with no per-room sensor fall back to the
-          // whole-home door sensor above. Occupancy is taken per-room from the
-          // Flair puck automatically (the room-occupied attribute), with the
-          // occupancy source above as the whole-home fallback.
-          List dabRooms = dabV2RoomList()
-          if (dabRooms.isEmpty()) {
-            paragraph '<small>Per-room door sensors appear here after device discovery.</small>'
-          } else {
-            paragraph '<b>Per-room door sensors (optional)</b><br>' +
-                      '<small>Map a contact sensor to a room so an open door only slows that room\u2019s ' +
-                      'airflow estimate. Unmapped rooms use the whole-home door sensor above.</small>'
-            dabRooms.each { room ->
-              input name: "roomDoorSensor_${room.id}", type: 'capability.contactSensor',
-                    title: "Door sensor \u2014 ${room.name}", required: false
-            }
-          }
-
-          input name: 'dabV2DiagnosticsEnabled', type: 'bool',
-                title: 'Create diagnostic devices (per-room + zone summary)', defaultValue: false
-          if (settings.thermostat1AdditionalStandardVents < 0) {
-            app.updateSetting('thermostat1AdditionalStandardVents', 0)
-          } else if (settings.thermostat1AdditionalStandardVents > MAX_STANDARD_VENTS) {
-            app.updateSetting('thermostat1AdditionalStandardVents', MAX_STANDARD_VENTS)
-          }
-
-          if (!getThermostat1Mode() || getThermostat1Mode() == 'auto') {
-            patchStructureData([mode: 'manual'])
-            atomicState?.putAt('thermostat1Mode', 'manual')
-          }
-          
-          // Efficiency Data Management Link
-          section {
-            href name: 'efficiencyDataLink', title: '🔄 Backup & Restore Efficiency Data', 
-                 description: 'Save your learned room efficiency data to restore after app updates', 
-                 page: 'efficiencyDataPage'
-            
-            // Show current status summary
-            def vents = getChildDevices().findAll { it.hasAttribute('percent-open') }
-            if (vents.size() > 0) {
-              def roomsWithData = vents.findAll { 
-                (it.currentValue('room-cooling-rate') ?: 0) > 0 || 
-                (it.currentValue('room-heating-rate') ?: 0) > 0 
-              }
-              paragraph "<small><b>Current Status:</b> ${roomsWithData.size()} of ${vents.size()} rooms have learned efficiency data</small>"
-            }
-            // DAB v2 diagnostics summary (R13/R14): the same values surfaced on
-            // the diagnostic child devices, rendered here for visibility. Renders
-            // to empty when the opt-in diagnostics surface is disabled.
-            paragraph renderDabV2DiagnosticsStatus()
-          }
-        }
-        // Only show vents in DAB section, not pucks
-        def vents = getChildDevices().findAll { it.hasAttribute('percent-open') }
-        for (child in vents) {
-          input name: "thermostat${child.getId()}", type: 'capability.temperatureMeasurement', title: "Choose Thermostat for ${child.getLabel()} (Optional)", multiple: false, required: false
-        }
-      }
-
-      section('Vent Options') {
-        input name: 'ventGranularity', type: 'enum', title: 'Vent Adjustment Granularity (in %)',
-              options: ['5':'5%', '10':'10%', '25':'25%', '50':'50%', '100':'100%'],
-              defaultValue: '5', required: true, submitOnChange: true
-        paragraph '<small>Select how granular the vent adjustments should be. For example, if you choose 50%, vents ' +
-                  'will only adjust to 0%, 50%, or 100%. Lower percentages allow for finer control, but may ' +
-                  'result in more frequent adjustments (which could affect battery-powered vents).</small>'
-      }
+      dabBalancingSection()
+      renderZoneConfigSections()
+      ventOptionsSection()
     } else {
       section {
         paragraph 'Device discovery button is hidden until authorization is completed.'
@@ -418,6 +386,189 @@ def mainPage() {
       input name: 'debugLevel', type: 'enum', title: 'Choose debug level', defaultValue: 0,
             options: [0: 'None', 1: 'Level 1 (All)', 2: 'Level 2', 3: 'Level 3'], submitOnChange: true
     }
+  }
+}
+
+private oauthSetupSection() {
+  section('OAuth Setup') {
+    input name: 'clientId', type: 'text', title: 'Client Id (OAuth 2.0)', required: true, submitOnChange: true
+    input name: 'clientSecret', type: 'password', title: 'Client Secret OAuth 2.0', required: true, submitOnChange: true
+    paragraph '<small><b>Obtain your client Id and secret from ' +
+              "<a href='https://forms.gle/VohiQjWNv9CAP2ASA' target='_blank'>here</a></b></small>"
+
+    if (settings?.clientId && settings?.clientSecret) {
+      if (!state.flairAccessToken && !state.authInProgress) {
+        state.authInProgress = true
+        state.remove('authError')  // Clear any previous error when starting new auth
+        runIn(2, 'autoAuthenticate')
+      }
+
+      if (state.flairAccessToken && !state.authError) {
+        paragraph "<span style='color: green;'>✓ Authenticated successfully</span>"
+      } else if (state.authError && !state.authInProgress) {
+        section {
+          paragraph "<span style='color: red;'>${state.authError}</span>"
+          input name: 'retryAuth', type: 'button', title: 'Retry Authentication', submitOnChange: true
+          paragraph "<small>If authentication continues to fail, verify your credentials are correct and try again.</small>"
+        }
+      } else if (state.authInProgress) {
+        paragraph "<span style='color: orange;'>⏳ Authenticating... Please wait.</span>"
+        paragraph "<small>This may take 10-15 seconds. The page will refresh automatically when complete.</small>"
+      } else {
+        paragraph "<span style='color: orange;'>Ready to authenticate...</span>"
+      }
+    }
+  }
+}
+
+private deviceDiscoverySection() {
+  section('Device Discovery') {
+    input name: 'discoverDevices', type: 'button', title: 'Discover', submitOnChange: true
+    input name: 'structureId', type: 'text', title: 'Home Id (SID)', required: false, submitOnChange: true
+  }
+}
+
+private dabBalancingSection() {
+  section('<h2>Dynamic Airflow Balancing</h2>') {
+    input name: 'dabEnabled', type: 'bool', title: 'Use Dynamic Airflow Balancing', defaultValue: false, submitOnChange: true
+    if (dabEnabled) {
+      renderDabBalancingOptions()
+    }
+    // Only show vents in DAB section, not pucks
+    def vents = getChildDevices().findAll { it.hasAttribute('percent-open') }
+    for (child in vents) {
+      input name: "thermostat${child.getId()}", type: 'capability.temperatureMeasurement', title: "Choose Thermostat for ${child.getLabel()} (Optional)", multiple: false, required: false
+    }
+  }
+}
+
+private renderDabBalancingOptions() {
+  input name: 'thermostat1', type: 'capability.thermostat', title: 'Choose Thermostat for Vents', multiple: false, required: true
+  input name: 'thermostat1TempUnit', type: 'enum', title: 'Units used by Thermostat', defaultValue: 2,
+        options: [1: 'Celsius (°C)', 2: 'Fahrenheit (°F)']
+  input name: 'thermostat1AdditionalStandardVents', type: 'number', title: 'Count of conventional Vents', defaultValue: 0, submitOnChange: true
+  paragraph '<small>Enter the total number of standard (non-Flair) adjustable vents in the home associated ' +
+            'with the chosen thermostat, excluding Flair vents. This ensures the combined airflow does not drop ' +
+            'below a specified percent to prevent HVAC issues.</small>'
+  input name: 'thermostat1CloseInactiveRooms', type: 'bool', title: 'Close vents on inactive rooms', defaultValue: true, submitOnChange: true
+
+  // R7.7 (R7.38/R7.40/R7.41): document the Manual-mode limitation in the
+  // App UI. Verified by A8 — while Dynamic Airflow Balancing holds the
+  // Flair structure in Manual mode (`patchStructureData([mode:
+  // 'manual'])`), Flair disables all of its own automation, so the
+  // local Puck dial can no longer set a room set point. There is no
+  // Flair API toggle to retain local Puck control, so this is surfaced
+  // as documentation only — no non-functional enable option is offered.
+  paragraph '<small><b>Note — Manual mode and the local Puck dial:</b> while Dynamic Airflow ' +
+            'Balancing is enabled it holds your Flair structure in <b>Manual mode</b>, which disables ' +
+            'Flair\u2019s own automation. As a result, turning the dial on a Flair Puck no longer changes ' +
+            'the room set point (local Puck setpoint control is unavailable while DAB-managed Manual mode ' +
+            'is held). The Flair API provides no way to re-enable the local Puck dial in this state, so ' +
+            'control the room set point from Hubitat instead.</small>'
+
+  // R6 fan-only / circulation-mode awareness. OFF by default so existing
+  // installs see no behavior change on upgrade (R6.9). The open percentage
+  // (R6.5/R6.6, range 10–100 %) and debounce (R6.7/R6.8, range 0–600 s) are
+  // clamped to the documented bounds by their accessors.
+  input name: 'circulationEnabled', type: 'bool', title: 'Open vents during fan-only circulation', defaultValue: false, submitOnChange: true
+  if (settings?.circulationEnabled) {
+    input name: 'circulationOpenPct', type: 'number', title: 'Circulation open percentage (10–100 %)', defaultValue: CIRCULATION_OPEN_DEFAULT, submitOnChange: true
+    input name: 'circulationDebounceSec', type: 'number', title: 'Circulation debounce (0–600 s)', defaultValue: CIRCULATION_DEBOUNCE_DEFAULT, submitOnChange: true
+    paragraph '<small>When the thermostat runs the fan without active heating or cooling, open the ' +
+              'zone\u2019s vents to the circulation percentage. The debounce suppresses short fan-only bursts. ' +
+              'The airflow safety floor always takes precedence.</small>'
+  }
+
+  input name: 'controlStrategy', type: 'enum', title: 'Control Strategy',
+        options: dabV2ControlStrategyOptions(),
+        defaultValue: dabV2NewInstallDefaultStrategy(), submitOnChange: true
+  input name: 'safetyFloorPct', type: 'number', title: 'Airflow safety floor (%)', defaultValue: 40
+  input name: 'minVentOpenGlobalPct', type: 'number', title: 'Minimum vent opening (0–100 %)', defaultValue: MIN_VENT_OPEN_DEFAULT
+  paragraph '<small>Every balanced vent is commanded to at least this percentage. The airflow safety ' +
+            'floor and the inactive-room close both take precedence over this minimum.</small>'
+  input name: 'spreadGuardrailC', type: 'decimal', title: 'Spread guardrail (C)', defaultValue: 1.0
+  input name: 'spreadImprovementDeadbandC', type: 'decimal', title: 'Spread improvement deadband (C)', defaultValue: 0.3
+  input name: 'crosscouplingEnabled', type: 'bool', title: 'Enable duct cross-coupling', defaultValue: true
+  input name: 'airflowLimitedMarginPct', type: 'number', title: 'Airflow-limited margin (%)', defaultValue: 5
+  input name: 'airflowLimitedErrorC', type: 'decimal', title: 'Airflow-limited error threshold (C)', defaultValue: 0.5
+  input name: 'conventionalOpenPct', type: 'number', title: 'Conventional vent assumed open (%)', defaultValue: 100
+  input name: 'activeIntervalMin', type: 'number', title: 'Active evaluation interval (min)', defaultValue: 3
+  input name: 'idleIntervalMin', type: 'number', title: 'Idle evaluation interval (min)', defaultValue: 10
+  input name: 'shortCycleGapMin', type: 'number', title: 'Short-cycle idle gap (min)', defaultValue: 10
+  input name: 'preAdjustDwellMin', type: 'number', title: 'Pre-adjust minimum idle dwell (min)', defaultValue: 5
+  input name: 'preAdjustTriggerC', type: 'decimal', title: 'Pre-adjust trigger threshold (C)', defaultValue: 1.0
+  input name: 'outdoorTempSource', type: 'capability.temperatureMeasurement', title: 'Outdoor temp source (optional)', required: false
+  input name: 'doorSensor', type: 'capability.contactSensor', title: 'Whole-home door sensor (optional, fallback)', required: false
+  input name: 'occupancySource', type: 'capability.presenceSensor', title: 'Occupancy source (optional, fallback)', required: false
+  dabPerRoomDoorSensorInputs()
+
+  input name: 'dabV2DiagnosticsEnabled', type: 'bool',
+        title: 'Create diagnostic devices (per-room + zone summary)', defaultValue: false
+  if (settings.thermostat1AdditionalStandardVents < 0) {
+    app.updateSetting('thermostat1AdditionalStandardVents', 0)
+  } else if (settings.thermostat1AdditionalStandardVents > MAX_STANDARD_VENTS) {
+    app.updateSetting('thermostat1AdditionalStandardVents', MAX_STANDARD_VENTS)
+  }
+
+  if (!getThermostat1Mode() || getThermostat1Mode() == 'auto') {
+    patchStructureData([mode: 'manual'])
+    atomicState?.putAt('thermostat1Mode', 'manual')
+  }
+
+  dabEfficiencyLinkSection()
+}
+
+// Per-room door sensors (R11.6): an open door only affects its OWN room's
+// conditioning rate, so each discovered room may map its own contact sensor.
+// Rooms with no per-room sensor fall back to the whole-home door sensor.
+// Occupancy is taken per-room from the Flair puck automatically (the
+// room-occupied attribute), with the occupancy source as the whole-home fallback.
+private dabPerRoomDoorSensorInputs() {
+  List dabRooms = dabV2RoomList()
+  if (dabRooms.isEmpty()) {
+    paragraph '<small>Per-room door sensors appear here after device discovery.</small>'
+  } else {
+    paragraph '<b>Per-room door sensors (optional)</b><br>' +
+              '<small>Map a contact sensor to a room so an open door only slows that room\u2019s ' +
+              'airflow estimate. Unmapped rooms use the whole-home door sensor above.</small>'
+    dabRooms.each { room ->
+      input name: "roomDoorSensor_${room.id}", type: 'capability.contactSensor',
+            title: "Door sensor \u2014 ${room.name}", required: false
+    }
+  }
+}
+
+private dabEfficiencyLinkSection() {
+  // Efficiency Data Management Link
+  section {
+    href name: 'efficiencyDataLink', title: '🔄 Backup & Restore Efficiency Data',
+         description: 'Save your learned room efficiency data to restore after app updates',
+         page: 'efficiencyDataPage'
+
+    // Show current status summary
+    def vents = getChildDevices().findAll { it.hasAttribute('percent-open') }
+    if (vents.size() > 0) {
+      def roomsWithData = vents.findAll {
+        (it.currentValue('room-cooling-rate') ?: 0) > 0 ||
+        (it.currentValue('room-heating-rate') ?: 0) > 0
+      }
+      paragraph "<small><b>Current Status:</b> ${roomsWithData.size()} of ${vents.size()} rooms have learned efficiency data</small>"
+    }
+    // DAB v2 diagnostics summary (R13/R14): the same values surfaced on
+    // the diagnostic child devices, rendered here for visibility. Renders
+    // to empty when the opt-in diagnostics surface is disabled.
+    paragraph renderDabV2DiagnosticsStatus()
+  }
+}
+
+private ventOptionsSection() {
+  section('Vent Options') {
+    input name: 'ventGranularity', type: 'enum', title: 'Vent Adjustment Granularity (in %)',
+          options: ['5':'5%', '10':'10%', '25':'25%', '50':'50%', '100':'100%'],
+          defaultValue: '5', required: true, submitOnChange: true
+    paragraph '<small>Select how granular the vent adjustments should be. For example, if you choose 50%, vents ' +
+              'will only adjust to 0%, 50%, or 100%. Lower percentages allow for finer control, but may ' +
+              'result in more frequent adjustments (which could affect battery-powered vents).</small>'
   }
 }
 
@@ -509,9 +660,32 @@ def installed() {
 
 def uninstalled() {
   log.debug 'Hubitat Flair App uninstalling'
+  // Full instance teardown (R8.13; design §5.4 "uninstalled() still tears down
+  // everything"). KEEP the existing complete teardown of children, ALL schedules
+  // (app-wide), and ALL subscriptions...
   removeChildren()
   unschedule()
   unsubscribe()
+  // ...AND additionally leave NO credential or instance-global bookkeeping behind:
+  // drop the held OAuth token and clear the instance's shared/concurrent
+  // atomicState (activeRequests, request-tracking timestamps, cadence, cycle ids).
+  state.remove('flairAccessToken')
+  clearDabV2AtomicState()
+}
+
+// Clear ALL instance-global atomicState bookkeeping as part of the full
+// uninstalled() teardown (R8.13). Removing each key (over a SNAPSHOT of the key
+// set, so mutation during iteration is safe) is the portable way to empty
+// atomicState on-hub; clear() is used only as a fallback where the platform
+// exposes it. No-op when atomicState is unavailable (e.g. off-device harness
+// without a backing map).
+private void clearDabV2AtomicState() {
+  if (atomicState == null) { return }
+  try {
+    new ArrayList(atomicState.keySet()).each { k -> atomicState.remove(k) }
+  } catch (ignored) {
+    try { atomicState.clear() } catch (ignored2) { /* nothing else we can do */ }
+  }
 }
 
 def initialize() {
@@ -566,6 +740,15 @@ def initialize() {
   runEvery5Minutes('cleanupPendingRequests')
   runEvery10Minutes('clearRoomCache')
   runEvery5Minutes('clearDeviceCache')
+
+  // Per-zone schedule setup (R2.13/R2.14; design §2.2/§5.4). Arm one zone-scoped
+  // evaluate schedule for EACH of THIS instance's zones, addressed by the
+  // Task-14.2 zone-suffixed id `dabV2ZoneScheduleId(zoneId)`. Driven by
+  // getZoneIds() (the post-migration zone shape) rather than the legacy global
+  // thermostat1, so installed()/updated()/initialize() all establish per-zone
+  // setup for the instance's own zones only — and the zone-scoped teardown
+  // (removeZone / reassignDeviceToZone) can cancel exactly that zone's job.
+  scheduleDabV2ZoneEvaluations()
 }
 
 // ------------------------------
@@ -590,8 +773,13 @@ private BigDecimal getRoomTemp(def vent) {
     def temp = tempDevice.currentValue('temperature')
     if (temp == null) {
       log "WARNING: Temperature device ${tempDevice?.getLabel() ?: 'Unknown'} for room '${roomName}' is not reporting temperature!", 2
-      // Fall back to room temperature
-      def roomTemp = vent.currentValue('room-current-temperature-c') ?: 0
+      // Fall back to room temperature; defer (null) if the room API has none
+      // either (R1.21 — never command on missing data).
+      def roomTemp = vent.currentValue('room-current-temperature-c')
+      if (roomTemp == null) {
+        log "Deferring for '${roomName}': Puck source has no temperature and room API has none", 2
+        return null
+      }
       log "Falling back to room temperature for '${roomName}': ${roomTemp}°C", 2
       return roomTemp
     }
@@ -604,8 +792,10 @@ private BigDecimal getRoomTemp(def vent) {
   
   def roomTemp = vent.currentValue('room-current-temperature-c')
   if (roomTemp == null) {
-    log "ERROR: No temperature available for room '${roomName}' - neither from Puck nor from room API!", 2
-    return 0
+    // R1.20/R1.21: with neither a Puck source nor a room API temperature,
+    // defer (null sentinel) rather than commanding on a fabricated 0°C reading.
+    log "Deferring for room '${roomName}' - no temperature from Puck source or room API", 2
+    return null
   }
   log "Using room temperature for '${roomName}': ${roomTemp}°C", 2
   return roomTemp
@@ -883,6 +1073,57 @@ boolean getDabV2CloseInactiveRooms() {
   coerceBoolean(settings?.thermostat1CloseInactiveRooms, true)
 }
 
+// R6.9 circulation (fan-only) awareness — OFF by default. Existing installs are
+// unchanged on upgrade because the flag must be explicitly enabled.
+boolean getDabV2CirculationEnabled() {
+  coerceBoolean(settings?.circulationEnabled, false)
+}
+
+// R6.5/R6.6 circulation open percentage. Documented default 50 %, validated
+// range 10–100 % with out-of-range input clamped to the nearest bound
+// (consistent with the existing clampInt numeric-config validation approach). A
+// missing/blank/non-numeric value degrades to the documented default.
+Integer getDabV2CirculationOpenPct() {
+  clampInt(settings?.circulationOpenPct, CIRCULATION_OPEN_MIN, CIRCULATION_OPEN_MAX, CIRCULATION_OPEN_DEFAULT)
+}
+
+// R6.7/R6.8 circulation debounce (seconds). Documented default 60 s, validated
+// range 0–600 s with out-of-range input clamped to the nearest bound. Feeds the
+// shouldApplyCirculationChange short-burst suppression gate.
+Integer getDabV2CirculationDebounceSec() {
+  clampInt(settings?.circulationDebounceSec, CIRCULATION_DEBOUNCE_MIN, CIRCULATION_DEBOUNCE_MAX, CIRCULATION_DEBOUNCE_DEFAULT)
+}
+
+// R7.4 configurable minimum vent opening (global, D3). Documented default 0 %,
+// validated range 0–100 % with out-of-range input clamped to the nearest bound
+// (consistent with the existing clampInt numeric-config validation approach). A
+// missing/blank/non-numeric value degrades to the documented default. Per-vent
+// overrides (state.zones[zoneId].minVentOpen) win over this global value.
+Integer getDabV2MinVentOpenPct() {
+  clampInt(settings?.minVentOpenGlobalPct, MIN_VENT_OPEN_MIN, MIN_VENT_OPEN_MAX, MIN_VENT_OPEN_DEFAULT)
+}
+
+// R6.7 circulation debounce gate. Mirrors the shouldApplyVentMove anti-chatter
+// cooldown so short fan-only bursts do not cause circulation thrash: a
+// circulation state change is SUPPRESSED only when a prior change is on record
+// AND it falls inside the debounce window. A change is APPLIED when the window
+// has elapsed, when there is no prior change on record, or when the debounce is
+// zero (suppression disabled). PURE: time is supplied by the caller (nowMs /
+// lastCirculationMs) and never read from the platform here.
+//
+// Requirements: 6.7, 6.8
+boolean shouldApplyCirculationChange(Map args) {
+  Long debounceMs = (args.debounceMs != null ? args.debounceMs : 0L) as Long
+  // A zero (or non-positive) debounce disables short-burst suppression.
+  if (debounceMs <= 0L) { return true }
+  Long nowMs = args.nowMs != null ? (args.nowMs as Long) : null
+  Long lastMs = args.lastCirculationMs != null ? (args.lastCirculationMs as Long) : null
+  // No prior change on record -> nothing to debounce against.
+  if (nowMs == null || lastMs == null) { return true }
+  // Suppress while still inside the debounce window; apply once it has elapsed.
+  return (nowMs - lastMs) >= debounceMs
+}
+
 // Resolve the full validated DAB v2 configuration (R19.1/R19.2). Consumed by the
 // evaluate loop / Allocator settings in later tasks.
 Map getDabV2Config() {
@@ -901,8 +1142,38 @@ Map getDabV2Config() {
     shortCycleGapMin          : getDabV2ShortCycleGapMin(),
     preAdjustDwellMin         : getDabV2PreAdjustDwellMin(),
     preAdjustTriggerC         : getDabV2PreAdjustTriggerC(),
-    closeInactiveRooms        : getDabV2CloseInactiveRooms()
+    closeInactiveRooms        : getDabV2CloseInactiveRooms(),
+    circulationEnabled        : getDabV2CirculationEnabled(),
+    circulationOpenPct        : getDabV2CirculationOpenPct(),
+    circulationDebounceSec    : getDabV2CirculationDebounceSec(),
+    // R7.4 minimum vent opening (global; per-vent overrides are merged per zone
+    // in getDabV2ZoneConfig). Applied before the final sfApply (precedence:
+    // safety floor > inactive-room close > minimum opening).
+    minVentOpenGlobalPct      : getDabV2MinVentOpenPct(),
+    minVentOpen               : [:]
   ]
+}
+
+// Resolve the DAB v2 evaluate config for a SINGLE zone (R2.10/R2.11/R8.3).
+// IDENTICAL to getDabV2Config() EXCEPT safetyFloorPct is read from this zone's
+// OWN slice (state.zones[zoneId].safetyFloorPct) and clamped on the same
+// SAFETY_FLOOR_MIN/MAX/DEFAULT band as the instance-global getter. Reading no
+// other zone's slice, so each zone is floored on its OWN value when sfApply runs
+// over only that zone's assigned vents — there is no cross-zone airflow
+// accumulator. A missing/blank/non-numeric per-zone value degrades to the
+// documented default via clampDecimal, exactly like the global getter.
+Map getDabV2ZoneConfig(String zoneId) {
+  Map config = getDabV2Config()
+  Map zones = (state?.zones instanceof Map) ? (Map) state.zones : [:]
+  Map zone = (zones[zoneId] instanceof Map) ? (Map) zones[zoneId] : [:]
+  config.safetyFloorPct = clampDecimal(zone?.safetyFloorPct, SAFETY_FLOOR_MIN, SAFETY_FLOOR_MAX, SAFETY_FLOOR_DEFAULT)
+  // R7.4: a per-zone global minimum opening (zone.minOpeningPct) overrides the
+  // instance-global setting; per-vent overrides (zone.minVentOpen) win over both.
+  if (zone?.minOpeningPct != null) {
+    config.minVentOpenGlobalPct = clampInt(zone.minOpeningPct, MIN_VENT_OPEN_MIN, MIN_VENT_OPEN_MAX, MIN_VENT_OPEN_DEFAULT)
+  }
+  config.minVentOpen = (zone?.minVentOpen instanceof Map) ? (Map) zone.minVentOpen : [:]
+  return config
 }
 
 // The single documented rule for a smart vent not assigned to any room (R4.7).
@@ -961,6 +1232,501 @@ void saveDabV2Model(Map model) {
     log "DAB v2 model persisted at ${bounded.finalBytes} bytes after bounding " +
         "steps ${bounded.stepsApplied}", 3
   }
+}
+
+// === Per-zone learned-model persistence (Option A; R2.7/R2.8, design §4.3/§5.3) ===
+//
+// Under Option A one App_Instance hosts N zones under `state.zones[zoneId]`, and
+// each zone owns its OWN learned efficiency model stored at
+// `state.zones[zoneId][DABV2_MODEL_STATE_KEY]`. These per-zone overloads are the
+// load/save seam the zone-iterating evaluate loop uses; they read and write ONLY
+// the addressed zone's slice so no zone can read or write another zone's model
+// (R2.8). They coexist with the flat `loadDabV2Model()` / `saveDabV2Model(Map)`
+// used by `initialize()` and `migrateToZoneModel` — Groovy dispatches on the
+// `String zoneId` argument, so the legacy callers are unaffected.
+
+// Load (and migrate-on-load with no data loss) the learned model from ONLY this
+// zone's slice. An empty default-zone slice seeds from the legacy device-
+// attribute efficiency export so an upgraded single-thermostat install loses no
+// learning (parity with the flat loader); any other zone starts from a fresh
+// model so a zone never inherits the global or another zone's learning (R2.8).
+def loadDabV2Model(String zoneId) {
+  Map zones = (state?.zones instanceof Map) ? (Map) state.zones : [:]
+  Map zone = (zones[zoneId] instanceof Map) ? (Map) zones[zoneId] : [:]
+  Object persisted = zone.get(DABV2_MODEL_STATE_KEY)
+  boolean alreadyV2 = persisted instanceof Map &&
+    ((Map) persisted).get('v') instanceof Number &&
+    (((Map) persisted).get('v') as int) >= MIO_SCHEMA_VERSION
+
+  Object source = persisted != null ? persisted
+      : (zoneId == 'default' ? exportEfficiencyData() : null)
+
+  def model = mioMigrate(source)
+
+  // Persist the migrated model back as schema v2 (idempotent: an already-v2
+  // slice is left untouched), writing ONLY this zone's slice.
+  if (!alreadyV2) {
+    saveDabV2Model(zoneId, model)
+  }
+  return model
+}
+
+// Encode + size-bound the in-memory learned model via Dabv2ModelIo and write the
+// compact schema-v2 payload to ONLY this zone's slice
+// (`state.zones[zoneId][DABV2_MODEL_STATE_KEY]`), leaving every other zone's
+// slice byte-for-byte unchanged (R2.8). Mirrors the bounding/encoding contract
+// of the flat `saveDabV2Model(Map)`; bounding is observable, never silent.
+void saveDabV2Model(String zoneId, Map model) {
+  def bounded = mioBound(model)
+  Map zones = (state?.zones instanceof Map) ? (Map) state.zones : new LinkedHashMap()
+  Map zone = (zones[zoneId] instanceof Map) ? (Map) zones[zoneId] : new LinkedHashMap()
+  zone[DABV2_MODEL_STATE_KEY] = bounded.encoded
+  zones[zoneId] = zone
+  state.zones = zones
+  if (!bounded.withinBudget) {
+    log "DAB v2 model for zone ${zoneId} persisted at ${bounded.finalBytes} bytes; over " +
+        "budget even after bounding steps ${bounded.stepsApplied}", 2
+  } else if (!bounded.stepsApplied.isEmpty()) {
+    log "DAB v2 model for zone ${zoneId} persisted at ${bounded.finalBytes} bytes after " +
+        "bounding steps ${bounded.stepsApplied}", 3
+  }
+}
+
+// User-initiated DAB learning reset / recalibrate (R7.3; R7.13–R7.21; design
+// §R7.3). Clears the persisted learned efficiency model for the selected scope so
+// stale per-room/per-vent efficiency does not misbalance a changed topology
+// (R7.17) and DAB relearns from scratch on subsequent HVAC cycles (R7.16).
+//
+// Scope (D5 = per-Zone with an all-Zones option):
+//   - scope == a zoneId               -> clears ONLY that zone's learned model
+//                                         (R7.14 single-Zone, R7.15).
+//   - scope == DABV2_RESET_SCOPE_ALL  -> iterates getZoneIds() and clears EACH
+//                                         zone's learned model (R7.14 all-Zones).
+//
+// Confirmation (R7.18 / R7.20): the action clears ONLY when explicitly confirmed.
+// `confirmed == true` confirms directly (button/command path passes the value);
+// when `confirmed` is null the action falls back to the UI confirmation flag
+// `settings.dabResetConfirm`. Without confirmation NOTHING is cleared and the
+// action is a safe no-op that asks the user to confirm — so learned data is never
+// cleared without an explicit user action (R7.20).
+//
+// Each scope clears by writing a FRESH encoded schema-v2 model into the zone's
+// own slice (`state.zones[zoneId][DABV2_MODEL_STATE_KEY]`) rather than removing
+// the key. Writing an empty-but-stamped model guarantees the loader returns an
+// empty model on the next cycle even for the 'default' zone (whose loader would
+// otherwise re-seed from the legacy device-attribute efficiency export), so
+// relearning truly starts from scratch (R7.16).
+//
+// The device-attribute backup and the `exportEfficiencyData` /
+// `mioExportModel` / `mioImportModel` backup-restore path are intentionally left
+// untouched, preserving the existing backup/restore path (R7.21). On completion
+// a user-visible confirmation is surfaced in `state.dabResetStatus` (R7.19).
+def resetDabLearning(String scope, Boolean confirmed = null) {
+  // R7.20: only an explicit, confirmed user action may clear learned data.
+  boolean isConfirmed = (confirmed != null) ? confirmed.booleanValue()
+      : (settings?.dabResetConfirm ? true : false)
+  if (!isConfirmed) {
+    state.dabResetStatus = '⚠ DAB reset requires confirmation — tick the confirmation box and retry.'
+    log 'DAB reset requested without confirmation; nothing cleared (R7.20)', 2
+    return state.dabResetStatus
+  }
+
+  // Resolve the scope to the concrete list of zone ids to clear (R7.14).
+  List targetZoneIds = (scope == DABV2_RESET_SCOPE_ALL) ? getZoneIds() : [scope]
+
+  // Clear each target zone's learned model by writing a fresh empty model into
+  // ONLY that zone's slice (R7.15); writing a stamped empty model (not removing
+  // the key) ensures the loader does not re-seed from device attributes so
+  // relearning starts from scratch (R7.16).
+  targetZoneIds.each { String zoneId ->
+    if (zoneId != null) {
+      saveDabV2Model(zoneId, mioNewModel())
+    }
+  }
+
+  // R7.19: surface a completion confirmation to the user.
+  String scopeLabel = (scope == DABV2_RESET_SCOPE_ALL)
+      ? "all zones (${targetZoneIds.size()})" : "zone '${scope}'"
+  state.dabResetStatus = ("✓ DAB learned data reset for ${scopeLabel}. " +
+      'Relearning will begin on subsequent HVAC cycles.').toString()
+  log "DAB learning reset for ${scopeLabel} (R7.15/R7.16)", 2
+  return state.dabResetStatus
+}
+
+// One-time, idempotent schema bump that wraps today's single-thermostat install
+// as the `'default'` entry of the zone-keyed model (Option A — ONE App_Instance
+// hosts N zones, design §4.1/§4.3/§5.5; R8.14–8.16, R8.27, R8.28). The instance
+// stays single-`structureId`, single OAuth token, and single
+// `atomicState.activeRequests` budget (instance-global keys are left untouched);
+// only the per-control config and learned model move under
+// `state.zones['default']`.
+//
+// Behavior (Property 24):
+//   • Relocates the learned model under
+//     `state.zones['default'][DABV2_MODEL_STATE_KEY]` as a schema-v2-stamped
+//     encoded payload via the lossless `mioMigrate`/`mioEncode` seam (every
+//     curve/counter preserved; new fields back-filled), without re-deriving it.
+//   • Moves the existing thermostat, vent assignments, conventional-vent count,
+//     and safety floor into the default zone.
+//   • Is idempotent: an already-wrapped shape (a `state.zones['default']`) is
+//     detected and the call is a no-op, so `state.zones` is byte-for-byte stable
+//     across a second migration.
+//   • No re-discovery and no re-authentication; legacy DAB is retained and the
+//     `balance` strategy stays opt-in.
+def migrateToZoneModel() {
+  // Idempotency: an already-wrapped install is left untouched (no-op).
+  if (state?.zones instanceof Map && ((Map) state.zones).containsKey('default')) {
+    return state.zones
+  }
+
+  Map zones = (state?.zones instanceof Map) ? (Map) state.zones : new LinkedHashMap()
+  Map defaultZone = new LinkedHashMap()
+
+  // (1) Relocate the learned model: migrate the current flat payload losslessly
+  //     and store the encoded schema-v2 form under the default zone. The flat
+  //     `state[DABV2_MODEL_STATE_KEY]` is left in place so the legacy DAB load
+  //     path keeps working until zone-aware persistence (task 12) supersedes it.
+  Map migrated = mioMigrate(state?.get(DABV2_MODEL_STATE_KEY))
+  defaultZone.put(DABV2_MODEL_STATE_KEY, mioEncode(migrated))
+
+  // (2) Relocate the single-thermostat config snapshot into the default zone.
+  defaultZone.put('thermostat', settings?.thermostat1)
+  defaultZone.put('safetyFloorPct', settings?.safetyFloorPct)
+  defaultZone.put('additionalStandardVents', settings?.thermostat1AdditionalStandardVents)
+  defaultZone.put('assignedVentIds',
+    getChildDevices().findAll { it.hasAttribute('percent-open') }
+                     .collect { it.getDeviceNetworkId() })
+
+  zones.put('default', defaultZone)
+  state.zones = zones
+  return state.zones
+}
+
+// ------------------------------
+// Device -> Zone assignment seam (R2.1-R2.5, R2.20, R2.21; design §4.1/§4.5)
+// ------------------------------
+// Option A: ONE App_Instance hosts N zones under `state.zones[zoneId]`. Each
+// zone owns its `assignedVentIds` / `assignedPuckIds` subset. "At most one
+// active Zone per device" (R2.3) is enforced directly by the uniqueness rule in
+// `assignDeviceToZone`: assigning a device to a zone removes it from every other
+// zone's assigned sets. A device assigned to no zone is inert (R2.20/R2.21) —
+// it is never offered as commandable by any zone, so it is left at its last
+// commanded position.
+
+// True when the child device identified by `deviceId` is a vent (advertises the
+// `percent-open` attribute); pucks do not. Mirrors the vent/puck split used by
+// `migrateToZoneModel` and `listDiscoveredDevices`.
+private boolean isVentDevice(String deviceId) {
+  def device = getChildDevice(deviceId)
+  return device != null && device.hasAttribute('percent-open')
+}
+
+// The full selectable candidate set offered to every zone: every vent and every
+// puck (i.e. every child device) discovered in the instance/SID (R2.1, R2.2).
+// Zone-independent — every zone may choose from the full set.
+List getZoneSelectableDeviceIds() {
+  return getChildDevices().collect { it.getDeviceNetworkId() }
+}
+
+// Ensure `state.zones` exists and `state.zones[zoneId]` has both assigned-set
+// lists, returning the zone map ready for mutation.
+private Map ensureZone(String zoneId) {
+  Map zones = (state?.zones instanceof Map) ? (Map) state.zones : new LinkedHashMap()
+  Map zone = (zones[zoneId] instanceof Map) ? (Map) zones[zoneId] : new LinkedHashMap()
+  if (!(zone.assignedVentIds instanceof List)) { zone.assignedVentIds = [] }
+  if (!(zone.assignedPuckIds instanceof List)) { zone.assignedPuckIds = [] }
+  zones[zoneId] = zone
+  state.zones = zones
+  return zone
+}
+
+// Assign a device to `zoneId` and enforce single-zone membership (R2.3): the
+// device is added to this zone's vent or puck assigned set (vent detected via
+// the `percent-open` attribute) and removed from EVERY OTHER zone's assigned
+// sets, so it belongs to at most one zone.
+def assignDeviceToZone(String deviceId, String zoneId) {
+  if (deviceId == null || zoneId == null) { return state?.zones }
+  boolean vent = isVentDevice(deviceId)
+
+  // Remove the device from every other zone's assigned sets (uniqueness).
+  Map zones = (state?.zones instanceof Map) ? (Map) state.zones : new LinkedHashMap()
+  zones.each { otherZoneId, otherZone ->
+    if (otherZoneId != zoneId && otherZone instanceof Map) {
+      if (otherZone.assignedVentIds instanceof List) {
+        ((List) otherZone.assignedVentIds).remove(deviceId)
+      }
+      if (otherZone.assignedPuckIds instanceof List) {
+        ((List) otherZone.assignedPuckIds).remove(deviceId)
+      }
+    }
+  }
+
+  // Add to the target zone's appropriate set (deduped).
+  Map zone = ensureZone(zoneId)
+  List target = vent ? (List) zone.assignedVentIds : (List) zone.assignedPuckIds
+  if (!target.contains(deviceId)) { target << deviceId }
+  return state.zones
+}
+
+// Devices that exist in the SID but are assigned to no zone (R2.20): excluded
+// from all balancing and from every zone's combined-airflow computation.
+List getUnassignedDeviceIds() {
+  Set assigned = [] as Set
+  Map zones = (state?.zones instanceof Map) ? (Map) state.zones : [:]
+  zones.each { zoneId, zone ->
+    if (zone instanceof Map) {
+      assigned.addAll((zone.assignedVentIds ?: []) as List)
+      assigned.addAll((zone.assignedPuckIds ?: []) as List)
+    }
+  }
+  return getZoneSelectableDeviceIds().findAll { !assigned.contains(it) }
+}
+
+// The vents a zone will actually command (R2.4, R2.5, R2.21): its own assigned
+// vents that still exist as child devices. A device in no zone appears in no
+// zone's commandable set, so it is never commanded.
+List getZoneCommandableVentIds(String zoneId) {
+  Map zones = (state?.zones instanceof Map) ? (Map) state.zones : [:]
+  Map zone = (zones[zoneId] instanceof Map) ? (Map) zones[zoneId] : [:]
+  List assignedVents = (zone.assignedVentIds ?: []) as List
+  return assignedVents.findAll { getChildDevice(it) != null }
+}
+
+// Ordered list of configured zone ids. Falls back to the single 'default' zone
+// (the post-migration shape) when no zones are present yet.
+List getZoneIds() {
+  Map zones = (state?.zones instanceof Map) ? (Map) state.zones : [:]
+  if (zones.isEmpty()) { return ['default'] }
+  return new ArrayList(zones.keySet())
+}
+
+// Create a new control zone from the UI (R2 multi-zone). The config page can
+// otherwise only render zones that already exist, so this is the single entry
+// point that introduces a new zone id into state.zones. Steps:
+//   1. Materialize the implicit 'default' zone first when no explicit zones
+//      exist yet, so adding zone #2 never drops the migrated single-thermostat
+//      config/model that lives under 'default'.
+//   2. Derive a unique zone id from the user-supplied name (generateZoneId).
+//   3. Persist the zone via ensureZone and snapshot its display name.
+//   4. Re-arm per-zone schedules so the new zone gets its own evaluate job.
+//   5. Clear the input so the next add starts blank (best-effort).
+// A blank name is a no-op (no zone is created).
+def addZoneFromUi() {
+  String rawName = (settings?.newZoneName ?: '').toString().trim()
+  if (!rawName) { return state?.zones }
+
+  Map existing = (state?.zones instanceof Map) ? (Map) state.zones : [:]
+  if (existing.isEmpty()) { ensureZone('default') }
+
+  String zoneId = generateZoneId(rawName)
+  Map zone = ensureZone(zoneId)
+  zone.zoneName = rawName
+  state.zones[zoneId] = zone
+
+  scheduleDabV2ZoneEvaluations()
+
+  try {
+    app?.removeSetting('newZoneName')
+  } catch (ignored) {
+    // removeSetting unavailable (e.g. off-device harness) — leaving the field
+    // populated is harmless; the next add slugs/dedupes the same name.
+  }
+  return state.zones
+}
+
+// Derive a unique, stable zone id from a user-supplied display name: slug to
+// [a-z0-9-], collapse/trim separators, fall back to 'zone', then append
+// '-2', '-3', ... until the id is not already in getZoneIds(). Uses no
+// wall-clock/RNG so the same inputs are reproducible under the off-device
+// harness (and on-device).
+String generateZoneId(String name) {
+  String base = (name ?: '').toLowerCase()
+      .replaceAll('[^a-z0-9]+', '-')
+      .replaceAll('^-+', '')
+      .replaceAll('-+$', '')
+  if (!base) { base = 'zone' }
+  List existingIds = getZoneIds()
+  if (!existingIds.contains(base)) { return base }
+  int i = 2
+  String candidate = "${base}-${i}"
+  while (existingIds.contains(candidate)) {
+    i++
+    candidate = "${base}-${i}"
+  }
+  return candidate
+}
+
+// Arm one zone-scoped evaluate schedule per configured zone (R2.13/R2.14; design
+// §2.2/§5.4). Each zone's job is NAMED by its zone-suffixed id
+// `dabV2ZoneScheduleId(zoneId)` so it is individually addressable: the
+// zone-scoped teardown cancels exactly that zone via
+// `unschedule(dabV2ZoneScheduleId(zoneId))` and never cross-cancels another zone
+// or instance. overwrite:true keeps at most one pending job per zone. The
+// recurring adaptive cadence remains the single self-rescheduling global
+// `dabV2EvaluateTick` (WA-3: avoid a proliferation of recurring timers); these
+// per-zone jobs are (re)established on each lifecycle event and give the
+// zone-scoped teardown a concrete, per-zone handle to cancel.
+private void scheduleDabV2ZoneEvaluations() {
+  Integer delaySec = (dabV2CadenceIntervalMin(false) * 60) as Integer
+  // All zones share ONE static handler (runScheduledDabV2ZoneEvaluate) and carry
+  // their zoneId in the scheduler `data` map, so NO dynamic per-zone handler
+  // names are needed. Dynamic names previously required a `methodMissing` MOP
+  // hook, which makes the Hubitat sandbox recompile the whole app pathologically
+  // slowly (it routes every dynamic call in the class through the hook) — the
+  // app could not be saved on-hub. Zone-scoped teardown reconciles by re-arming
+  // the surviving zones rather than cancelling a per-zone-named job.
+  unschedule('runScheduledDabV2ZoneEvaluate')
+  getZoneIds().each { String zoneId ->
+    runIn(delaySec, 'runScheduledDabV2ZoneEvaluate', [overwrite: false, data: [zoneId: zoneId]])
+  }
+}
+
+// Real body for a zone's scheduled evaluate. Hubitat invokes the static handler
+// `runScheduledDabV2ZoneEvaluate` and passes the scheduler `data` map, from which
+// we read the zoneId. Guarded on dabEnabled and isolated so one zone's transient
+// failure can never strand another (R2.7/R2.14).
+void runScheduledDabV2ZoneEvaluate(Map data = null) {
+  String zoneId = (data instanceof Map) ? (data.zoneId as String) : null
+  if (!settings?.dabEnabled || zoneId == null) { return }
+  try {
+    evaluateDabV2ZoneById(zoneId)
+  } catch (err) {
+    logError err
+  }
+}
+
+// Hubitat invokes a scheduled job by its handler-method NAME. Per-zone evaluates
+// use the single static handler `runScheduledDabV2ZoneEvaluate` (above) with the
+// zoneId carried in the scheduler `data` map, so there are NO dynamic handler
+// names and therefore NO `methodMissing` MOP hook (its presence forced the
+// sandbox to route every dynamic call in the class through it, which made the
+// app impossible to save on-hub).
+
+// Reassign a device into `targetZoneId` (R2.4, Property 23). Enforces the
+// existing single-zone uniqueness rule by delegating to `assignDeviceToZone`,
+// and for every source zone the device just left, cancels that source zone's
+// zone-scoped scheduled move (`unschedule(dabV2ZoneScheduleId(sourceZoneId))`)
+// so the source zone issues no further command for it and no orphaned schedule
+// keeps actuating it (design §5.4 "Device reassignment Zone A->B"). The source
+// zones are computed BEFORE reassigning, since `assignDeviceToZone` strips the
+// device from every other zone. No command is issued: the device is left at its
+// last commanded position and the target zone picks it up on its next evaluation.
+def reassignDeviceToZone(String deviceId, String targetZoneId) {
+  if (deviceId == null || targetZoneId == null) { return state?.zones }
+
+  // Move the device into the target zone (uniqueness rule removes it from the
+  // source zones' assigned sets).
+  assignDeviceToZone(deviceId, targetZoneId)
+
+  // Reconcile per-zone schedules: re-arm one job per surviving zone so the
+  // device's former zone(s) re-evaluate WITHOUT it and no orphaned schedule keeps
+  // actuating it. (Single static handler + data map means we reconcile by
+  // re-arming rather than cancelling a per-zone-named job.)
+  scheduleDabV2ZoneEvaluations()
+  return state.zones
+}
+
+// Zone-scoped teardown on zone removal (R2.13/R2.14, Property 23; design §5.4
+// "Zone-scoped teardown on zone removal"): cancel ONLY this zone's named
+// schedule and clear ONLY `state.zones[zoneId]` (and that zone's zone-suffixed
+// settings, if any), leaving every other zone's schedule and `state.zones[*]`
+// entry untouched. Only `uninstalled()` tears everything down.
+def removeZone(String zoneId) {
+  if (zoneId == null) { return state?.zones }
+
+  // Clear only this zone's slice of state.zones.
+  Map zones = (state?.zones instanceof Map) ? (Map) state.zones : new LinkedHashMap()
+  zones.remove(zoneId)
+  state.zones = zones
+
+  // Re-arm per-zone schedules for the SURVIVING zones only; the removed zone gets
+  // no job (it is no longer in getZoneIds()), so its scheduled evaluate is gone
+  // and no other zone is affected.
+  scheduleDabV2ZoneEvaluations()
+
+  // Best-effort clear of this zone's zone-suffixed settings (never fatal: the
+  // sandbox may not expose removeSetting, and the canonical state is state.zones).
+  try {
+    ['zoneName', 'zoneThermostat', 'zoneAssignedDevices', 'zoneAdditionalStandardVents'].each { String prefix ->
+      String key = "${prefix}_${zoneId}"
+      if (settings?.containsKey(key)) { app?.removeSetting(key) }
+    }
+  } catch (ignored) {
+    // removeSetting unavailable (e.g. off-device harness) — state teardown above
+    // is authoritative.
+  }
+  return state.zones
+}
+
+// Render the single-page repeated per-zone configuration sections (R2.6, R2.9,
+// R2.12; design §4.1/§4.5). One section per zone shows the per-zone display
+// name (R2.12), the controlling thermostat (R2.6), the conventional-vent count
+// (R2.9), and the device-assignment selector drawn from the full selectable set
+// (R2.1/R2.2). The selection is persisted into `state.zones[zoneId]` via
+// `applyZoneAssignmentSelection`, which enforces the single-zone uniqueness rule
+// (R2.3). Unassigned devices are surfaced as inert (R2.20/R2.21).
+def renderZoneConfigSections() {
+  if (!settings?.dabEnabled) { return }
+  List selectable = getZoneSelectableDeviceIds()
+  Map selectableOptions = [:]
+  selectable.each { id ->
+    def device = getChildDevice(id)
+    selectableOptions[id] = device ? device.getLabel() : id
+  }
+
+  // Add-zone affordance (R2.6/R2.12): without this control the page only renders
+  // zones that already exist in state.zones, and getZoneIds() falls back to the
+  // single implicit 'default' zone — so a user could never create a second zone.
+  // The button is handled by appButtonHandler -> addZoneFromUi().
+  section('Add a zone') {
+    input name: 'newZoneName', type: 'text', title: 'New zone name',
+          required: false, submitOnChange: false
+    input name: 'addZone', type: 'button', title: 'Add zone', submitOnChange: true
+    paragraph '<small>Create an additional control zone (its own thermostat, assigned vents/pucks, ' +
+              'safety floor, and learned model). After adding, assign devices to it below; each vent ' +
+              'or puck belongs to at most one zone.</small>'
+  }
+
+  getZoneIds().each { zoneId ->
+    Map zone = ((state?.zones instanceof Map) && (state.zones[zoneId] instanceof Map)) ? (Map) state.zones[zoneId] : [:]
+    String currentName = zone.zoneName ?: (settings?."zoneName_${zoneId}" ?: zoneId)
+    section("Zone: ${currentName}") {
+      input name: "zoneName_${zoneId}", type: 'text', title: 'Zone display name',
+            defaultValue: (zone.zoneName ?: zoneId), submitOnChange: true
+      input name: "zoneThermostat_${zoneId}", type: 'capability.thermostat',
+            title: 'Controlling thermostat for this zone', multiple: false, required: false, submitOnChange: true
+      input name: "zoneAdditionalStandardVents_${zoneId}", type: 'number',
+            title: 'Count of conventional Vents for this zone', defaultValue: 0, submitOnChange: true
+      input name: "zoneDevices_${zoneId}", type: 'enum',
+            title: 'Vents and pucks assigned to this zone',
+            options: selectableOptions, multiple: true, required: false, submitOnChange: true
+      paragraph '<small>Each vent or puck belongs to at most one zone; assigning it here removes it ' +
+                'from any other zone. Devices left unassigned are not balanced or commanded.</small>'
+      applyZoneAssignmentSelection(zoneId)
+    }
+  }
+
+  List unassigned = getUnassignedDeviceIds()
+  if (!unassigned.isEmpty()) {
+    section('Unassigned devices') {
+      String names = unassigned.collect { selectableOptions[it] ?: it }.join(', ')
+      paragraph "<small>These devices belong to no zone and are left inert (not balanced, " +
+                "not commanded): ${names}</small>"
+    }
+  }
+}
+
+// Persist the per-zone device multi-select into `state.zones[zoneId]`, honoring
+// the single-zone uniqueness rule for every selected device (R2.3). Stores the
+// per-zone display name and conventional-vent count snapshot as well (R2.9/R2.12).
+private void applyZoneAssignmentSelection(String zoneId) {
+  Map zone = ensureZone(zoneId)
+  zone.zoneName = settings?."zoneName_${zoneId}" ?: zoneId
+  zone.additionalStandardVents = settings?."zoneAdditionalStandardVents_${zoneId}" ?: 0
+  def selectedRaw = settings?."zoneDevices_${zoneId}"
+  if (selectedRaw == null) { return }
+  List selected = (selectedRaw instanceof List) ? selectedRaw : [selectedRaw]
+  selected.each { deviceId -> assignDeviceToZone(deviceId.toString(), zoneId) }
 }
 
 private Map dabV2TopologyError(String entry, String reason) {
@@ -1279,6 +2045,121 @@ def runDabV2BalanceEvaluate() {
   }
 }
 
+// === Zone-iterating evaluate loop (Option A; R2.4/R2.5/R2.7/R2.8, R8.26; design §5.3) ===
+//
+// The multi-zone evaluate entry point. It iterates the configured zones
+// (`state.zones[zoneId]`) and runs ONE independent DAB control loop per zone
+// (R2.7), each reading/writing ONLY its own learned model entry (R2.8) and
+// commanding/counting ONLY its own assigned vents (R2.4/R2.5). To respect the
+// Hubitat ~20s method budget (R8.26) the loop CHUNKS across zones: a bounded
+// number of zones is processed per invocation and the remainder is continued on
+// a fresh scheduled invocation via `runInMillis`, so a home with many zones
+// never blocks past the budget.
+def runDabV2ZonedEvaluate() {
+  if (!settings?.dabEnabled) { return }
+  List zoneIds = getZoneIds()
+  if (!zoneIds) { return }
+  runDabV2ZonedEvaluateChunk([zoneQueue: new ArrayList(zoneIds)])
+}
+
+// Process up to `DABV2_ZONES_PER_CHUNK` zones from the pending queue, then
+// reschedule itself for the remainder. The queue is carried forward in the
+// scheduled-handler `data` so each invocation stays well within the method
+// budget. A per-zone failure is isolated (logged) so it can never strand the
+// remaining zones or the continuation.
+def runDabV2ZonedEvaluateChunk(Map data = null) {
+  if (!settings?.dabEnabled) { return }
+  List queue = (data?.zoneQueue instanceof List) ? new ArrayList((List) data.zoneQueue) : getZoneIds()
+  int processed = 0
+  while (!queue.isEmpty() && processed < DABV2_ZONES_PER_CHUNK) {
+    String zoneId = queue.remove(0)?.toString()
+    if (zoneId != null) {
+      try {
+        evaluateDabV2ZoneById(zoneId)
+      } catch (err) {
+        logError err
+      }
+    }
+    processed++
+  }
+  if (!queue.isEmpty()) {
+    runInMillis(DABV2_ZONE_CHUNK_DELAY_MS, 'runDabV2ZonedEvaluateChunk',
+                [overwrite: true, data: [zoneQueue: queue]])
+  }
+}
+
+// Run one independent DAB control loop for a single zone. Builds the PURE
+// per-room inputs from ONLY this zone's commandable vents (R2.4/R2.5), loads and
+// (in the finally block) persists ONLY this zone's learned model (R2.8), and
+// dispatches the zone's own targets. Wrapped so a transient evaluate failure
+// still leaves the zone's model slice stamped at schema v2.
+private void evaluateDabV2ZoneById(String zoneId) {
+  Map zones = (state?.zones instanceof Map) ? (Map) state.zones : [:]
+  Map zone = (zones[zoneId] instanceof Map) ? (Map) zones[zoneId] : [:]
+
+  // Each zone reads and writes ONLY its own learned model (R2.8).
+  Map model = loadDabV2Model(zoneId)
+
+  // Restrict topology to ONLY this zone's commandable vents (R2.4/R2.5): a
+  // device outside the zone's assigned set is neither commanded nor counted.
+  Set commandable = (getZoneCommandableVentIds(zoneId) ?: []) as Set
+  Map zoneVentsByRoomId = buildZoneVentsByRoomId(commandable)
+
+  try {
+    if (!zoneVentsByRoomId.isEmpty()) {
+      def thermostat = (zone?.thermostat != null) ? zone.thermostat : settings?.thermostat1
+      def action = thermostat?.currentValue('thermostatOperatingState')
+      String mode = resolveDabV2HvacAction(action)
+      // Setpoint is read in the active conditioning direction (idle/fan zones
+      // still need it for the bounded pre-adjust trigger).
+      String setpointMode = (mode == HEATING) ? HEATING : COOLING
+      BigDecimal setpointC = getThermostatSetpoint(setpointMode)
+      if (setpointC != null) {
+        List roomData = gatherDabV2ZoneRoomData(zoneVentsByRoomId, mode)
+        if (roomData) {
+          Map ctxInputs = buildDabV2ContextInputs()
+          Map prevCycle = (zone?.dabV2Cycle in Map) ? (Map) zone.dabV2Cycle : null
+          // Floor THIS zone on its OWN safetyFloorPct (read from its own slice)
+          // so sfApply enforces the zone's own floor over only its own vents —
+          // no cross-zone airflow accumulator (R2.10/R2.11/R8.3).
+          Map zoneConfig = getDabV2ZoneConfig(zoneId)
+          Map zoneResult = evaluateDabV2Zone(roomData, setpointC, action, zoneConfig, ctxInputs, prevCycle)
+          // Persist this zone's OWN cycle bookkeeping under its OWN slice so one
+          // zone's cycle state never bleeds into another's.
+          zone.dabV2Cycle = [mode: zoneResult.mode, cycleId: zoneResult.cycleId,
+              lastActiveMode: zoneResult.lastActiveMode, anchorTargets: zoneResult.anchorTargets,
+              idleSinceMs: zoneResult.idleSinceMs, predictedSpreadC: zoneResult.predictedSpreadC]
+          zones[zoneId] = zone
+          state.zones = zones
+          dispatchDabV2Targets(zoneResult, roomData)
+        }
+      }
+    }
+  } finally {
+    // Persist this zone's model back to ONLY its own slice (R2.8). Even on a
+    // no-op cycle this keeps the slice stamped at schema v2.
+    saveDabV2Model(zoneId, model)
+  }
+}
+
+// Build a room-id -> [ventIds] map restricted to ONLY the given commandable vent
+// ids, derived from the instance-global discovered topology
+// (`atomicState.ventsByRoomId`). A room contributes only the vents that belong
+// to this zone; a room with none of the zone's vents is omitted entirely, so the
+// zone never reads or counts another zone's devices (R2.4/R2.5).
+private Map buildZoneVentsByRoomId(Set commandable) {
+  Map out = new LinkedHashMap()
+  if (!commandable) { return out }
+  def byRoom = atomicState?.ventsByRoomId
+  if (!(byRoom instanceof Map)) { return out }
+  ((Map) byRoom).each { roomId, ventIds ->
+    List ids = (ventIds in List) ? (List) ventIds : [ventIds]
+    List mine = ids.findAll { commandable.contains(it) }
+    if (!mine.isEmpty()) { out.put(roomId, mine) }
+  }
+  return out
+}
+
 // Build the PURE per-room input maps for the `balance` pipeline from the managed
 // child vents (Task 10.1). One entry PER ROOM (R15 grouping): all vents in a
 // room share the room-level temperature / rate / active attributes, so the first
@@ -1300,6 +2181,12 @@ List gatherDabV2ZoneRoomData(ventsByRoomId, String mode) {
       }
       if (vent == null) { return }
       BigDecimal tempC = getRoomTemp(vent)
+      // R1.21 defer: a room with no resolvable temperature is skipped this
+      // cycle (never commanded on missing data) rather than fed a fabricated 0.
+      if (tempC == null) {
+        log "Deferring zone room ${roomId}: no resolvable temperature", 2
+        return
+      }
       def rate = heating ? vent.currentValue('room-heating-rate') : vent.currentValue('room-cooling-rate')
       boolean active = vent.currentValue('room-active') == 'true'
       def currentOpen = vent.currentValue('percent-open') ?: 0
@@ -1812,6 +2699,83 @@ private Map dabV2IdleFloorRequiredResult(List roomData, BigDecimal setpointC,
           combinedOpenPct: dabV2CombinedOpenPct(safeTargets, rooms, settings)]
 }
 
+// === DAB v2 circulation (fan-only) path (Task 8.2; R6) ===
+//
+// When the controlling thermostat reports a circulation operating state
+// (`dabv2DetectCirculation`, R6.1/R6.2) AND circulation is enabled (R6.9), open
+// the zone's vents to the configured circulation % (R6.3/R6.5/R6.6). Honors the
+// inactive-room interaction: when "close vents on inactive rooms" is enabled only
+// active-room vents are targeted; otherwise every vent is (R6.12/R6.13). The
+// per-vent targets are routed through the single Safety_Floor choke point so the
+// floor always wins (R6.10/R6.11) — `sfApply` raises the targeted vents until the
+// commanded combined airflow reaches the floor. Returns null when circulation is
+// disabled or the operating state is not circulation, so the caller falls back to
+// the normal idle / pre-adjust path. Circulation is a NON-conditioning action
+// (treated as DABV2_ACTION_IDLE): no efficiency sample is recorded (R6.14, gated
+// in finalizeRoomStates). On a transition back to heating/cooling the normal DAB
+// path resumes on the next evaluation (R6.15).
+private Map dabV2CirculationResult(action, List roomData, BigDecimal setpointC,
+    Map cfg, Map ctxInputs, Map prevCycle) {
+  if (!coerceBoolean(cfg?.circulationEnabled, false)) { return null }
+  String operatingState = (action == null ? null : action.toString())
+  // fanMode is not surfaced at this seam; the canonical fan-only operating state
+  // (R6.1) is sufficient. The fan-on+idle fallback (R6.2) is detected upstream
+  // where the fan mode is available and handed in as a 'fan only' action.
+  if (!dabv2DetectCirculation(operatingState, null)) { return null }
+
+  BigDecimal circPct = (cfg?.circulationOpenPct ?: CIRCULATION_OPEN_DEFAULT) as BigDecimal
+  boolean closeInactive = coerceBoolean(cfg?.closeInactiveRooms, true)
+
+  // Build the per-room circulation candidates keyed by roomId (room-keyed so the
+  // result threads through sfApply, which indexes rooms by roomId). Each room's
+  // per-room active flag drives the inactive-room interaction in the pure helper.
+  Map srcByRoom = [:]
+  List circIds = []
+  Map activeById = [:]
+  (roomData ?: []).each { rd ->
+    if (rd == null) { return }
+    String rid = rd.roomId == null ? null : rd.roomId.toString()
+    if (rid == null) { return }
+    srcByRoom[rid] = rd
+    circIds << rid
+    activeById[rid] = coerceBoolean(rd.active, false) ? Boolean.TRUE : Boolean.FALSE
+  }
+
+  // Pure circulation targets (R6.3/R6.10–R6.13): active-room vents (or all when
+  // not closing inactive) -> circulation %.
+  Map targets = dabv2CirculationTargets(circIds, circPct, activeById, closeInactive)
+  if (targets.isEmpty()) { return null }
+
+  // The circulating rooms ARE the zone's device set for the floor math. Mark them
+  // active with a positive signed error so the Safety_Floor can raise them to the
+  // floor (the circulation targets carry no comfort error of their own). Inactive
+  // contribution is zeroed — circulation explicitly decides which vents open.
+  List sfRooms = []
+  targets.keySet().each { rid ->
+    Map src = (Map) srcByRoom[rid]
+    List vids = (src?.ventIds ?: [rid])
+    BigDecimal cur = isDabV2UsableNumber(src?.currentOpen) ? (src.currentOpen as BigDecimal) : 0
+    sfRooms << [roomId: rid, active: true, signedErrorC: 1.0d, currentOpen: cur, ventIds: vids]
+  }
+  def settings = dabV2AllocSettings(cfg, [sum: 0, count: 0])
+
+  def floored = sfApply(targets, sfRooms, settings)
+  Map safeTargets = floored[0] as Map
+  Set floorRequiredRooms = computeFloorRequiredVentIds(targets, safeTargets)
+  String lastActiveMode = prevCycle?.lastActiveMode ?: prevCycle?.mode
+  Map anchor = (prevCycle?.anchorTargets in Map) ? (Map) prevCycle.anchorTargets
+             : (prevCycle?.targets in Map ? (Map) prevCycle.targets : null)
+
+  return [balancing: true, action: DABV2_ACTION_IDLE, circulation: true,
+          mode: DABV2_ACTION_IDLE, targets: safeTargets,
+          floorBinding: floored[1] as boolean, airflowLimited: ([] as Set),
+          floorRequiredRooms: floorRequiredRooms, predictedSpreadC: 0,
+          combinedOpenPct: dabV2CombinedOpenPct(safeTargets, sfRooms, settings),
+          cycleId: (prevCycle?.cycleId ?: 0L), newAnchor: false, reusedAnchor: false,
+          lastActiveMode: lastActiveMode, idleSinceMs: null, anchorTargets: anchor,
+          inactiveClosed: dabV2InactiveClosed(roomData, closeInactive)]
+}
+
 // Per-thermostat evaluate (one zone). Resolves the conditioning mode from the
 // thermostat action, gathers the zone's room states, and — only while actively
 // heating/cooling — runs the balance chain Context_Mapper -> Learning_Model ->
@@ -1829,6 +2793,13 @@ Map evaluateDabV2Zone(List roomData, BigDecimal setpointC, action,
   String mode = resolveDabV2HvacAction(action)
   Long evalNow = (nowMs != null ? nowMs : now()) as Long
   if (!isDabV2BalancingAction(mode)) {
+    // R6 fan-only / circulation awareness (off by default, R6.9). When enabled
+    // and the thermostat reports a circulation operating state, open the zone's
+    // vents to the circulation % and route through sfApply so the floor wins
+    // (R6.3/R6.10/R6.11). Circulation is a non-conditioning action — it records
+    // no efficiency sample (gated in finalizeRoomStates, R6.14).
+    Map circ = dabV2CirculationResult(action, roomData, setpointC, cfg, ctxInputs, prevCycle)
+    if (circ != null) { return circ }
     // Idle / fan-only: no balancing recompute. The bounded pre-adjust path
     // (R10.8) and a move strictly required to reach the floor (R10.6) are the
     // ONLY commands permitted here.
@@ -1850,13 +2821,20 @@ Map evaluateDabV2Zone(List roomData, BigDecimal setpointC, action,
   // Allocator -> group-normalize -> Safety_Floor (single choke point, R6.5).
   def alloc = allocAllocate(rooms, (setpointC ?: 0), mode, settings, null)
   Map normalized = dabV2GroupNormalize(alloc.targets, settings.granularity)
-  def floored = sfApply(normalized, rooms, settings)
+  // R7.4 minimum vent opening, applied BEFORE the final sfApply so the documented
+  // precedence holds: safety floor > inactive-room close > configured minimum
+  // opening. Inactive-closed groups are left untouched (the minimum never
+  // overrides the inactive-room close); the floor below may still reopen them.
+  Map withMin = dabv2ApplyMinOpening(normalized, rooms,
+    cfg.minVentOpenGlobalPct, (cfg.minVentOpen instanceof Map ? (Map) cfg.minVentOpen : [:]),
+    coerceBoolean(cfg.closeInactiveRooms, true))
+  def floored = sfApply(withMin, rooms, settings)
   Map safeTargets = floored[0] as Map
 
   // Per-room "must open to MEET the floor" set: a room whose floor-padded target
   // exceeds its pre-floor (balance) target had airflow added solely to satisfy
   // the floor, so its move bypasses anti-chatter on dispatch (R6.2/R10.5).
-  Set floorRequiredRooms = computeFloorRequiredVentIds(normalized, safeTargets)
+  Set floorRequiredRooms = computeFloorRequiredVentIds(withMin, safeTargets)
 
   // Cycle anchor — a mode flip (cooling<->heating) starts a new anchor (R8.8).
   Map anchor = resolveDabV2CycleAnchor(prevCycle?.mode, mode, prevCycle?.cycleId)
@@ -1884,9 +2862,13 @@ private Map dabV2ReusedAnchorResult(Map prevCycle, String mode, List roomData,
   def ctx = dabV2ContextFrom(ctxInputs)
   List rooms = gatherDabV2RoomInputs(roomData, mode, setpointC, ctx)
   def settings = dabV2AllocSettings(cfg, dabV2InactiveAirflow(rooms))
-  def floored = sfApply(anchorTargets, rooms, settings)
+  // R7.4 minimum opening before the final sfApply (precedence preserved on reuse).
+  Map withMin = dabv2ApplyMinOpening(anchorTargets, rooms,
+    cfg.minVentOpenGlobalPct, (cfg.minVentOpen instanceof Map ? (Map) cfg.minVentOpen : [:]),
+    coerceBoolean(cfg.closeInactiveRooms, true))
+  def floored = sfApply(withMin, rooms, settings)
   Map safeTargets = floored[0] as Map
-  Set floorRequiredRooms = computeFloorRequiredVentIds(anchorTargets, safeTargets)
+  Set floorRequiredRooms = computeFloorRequiredVentIds(withMin, safeTargets)
   return [balancing: true, action: mode, mode: mode, targets: safeTargets,
           floorBinding: floored[1] as boolean, airflowLimited: ([] as Set),
           floorRequiredRooms: floorRequiredRooms,
@@ -1913,6 +2895,23 @@ private Map dabV2ReusedAnchorResult(Map prevCycle, String mode, List roomData,
 // a list of decision maps ordered floor-required-first then largest-move-first:
 //   [roomId, target, currentOpen, ventIds, mustOpen, apply]
 // where every vent in `ventIds` receives `target` when `apply` is true.
+// Combined airflow (per-vent mean) of a dispatch candidate plan: APPLIED groups
+// contribute their target, HELD groups their current aperture. Extracted from a
+// nested closure inside dabV2PlanGroupDispatch into a top-level for-loop method:
+// a closure-containing-closure made the Hubitat sandbox recompile the whole app
+// pathologically slowly. Pure arithmetic, no Hubitat APIs.
+private double dabV2DispatchedCombinedAirflow(List candidates) {
+  double sum = 0.0d
+  int vents = 0
+  for (d in (candidates ?: [])) {
+    int nv = Math.max(1, (((d.ventIds ?: []) as List).size()))
+    double v = d.apply ? (d.target as double) : (d.currentOpen as double)
+    sum += v * nv
+    vents += nv
+  }
+  return vents > 0 ? (sum / vents) : 0.0d
+}
+
 List dabV2PlanGroupDispatch(Map safeTargets, Set floorRequiredRooms, List rooms,
     Map lastGroupMoveMs, Long nowMs, Map opts = [:]) {
   Map byRoom = [:]
@@ -1959,6 +2958,96 @@ List dabV2PlanGroupDispatch(Map safeTargets, Set floorRequiredRooms, List rooms,
     if (d.mustOpen) { d.apply = true; return }   // safety move — never batch-capped
     if (ordinaryApplied < maxMoves) { d.apply = true; ordinaryApplied++ }
     else { d.apply = false }
+  }
+
+  // === Fail-safe-to-floor escalation (Task 6.6; R4.11/R4.12/R4.13/R4.14) ======
+  // `computeFloorRequiredVentIds` only flags groups the Safety_Floor RAISED above
+  // their allocator base target. A "load-bearing ordinary open" (a high safe
+  // target on a currently-low vent that the floor silently depends on) is NOT
+  // flagged, so the per-cycle cap / anti-chatter cooldown can HOLD it — leaving
+  // the actually-dispatched plan (APPLIED groups -> their target, HELD groups ->
+  // their current aperture) below the floor (vents "stuck closed" under
+  // throttling). After the ordinary cap/cooldown decisions, reconstruct the
+  // dispatched plan's combined airflow and, while it sits below the floor:
+  //   Phase 1 — APPLY held load-bearing OPENS (largest airflow gain first) at
+  //             their comfort target; and if comfort capacity is exhausted,
+  //   Phase 2 — OPEN vents BEYOND their comfort target toward 100 (most-headroom
+  //             first) as the inviolable-floor override.
+  // Escalated/opened groups are promoted to floor-required (`mustOpen`) so they
+  // bypass the cap AND the cooldown exactly like an sfApply-forced open
+  // (R4.13/R4.14) and are fail-open retried on a failed PATCH. Ordinary
+  // non-load-bearing moves (the floor is met without them) stay held/capped,
+  // preserving burst coalescing (R4.9).
+  //
+  // The floor threshold is `opts.floorPct` when the orchestrator supplies it
+  // (`dispatchDabV2Targets` passes the zone's clamped safety floor — this is what
+  // enables the Phase-2 open-beyond-comfort override); otherwise it is the SAFE
+  // plan's own combined airflow — every group at its safe target — which the
+  // single `sfApply` choke point already guarantees meets the floor, so never
+  // dropping below it guarantees the dispatched plan never drops below the floor
+  // (and Phase 2 never triggers without an explicit floor). Combined airflow here
+  // is the per-vent mean over the plan's groups (conventional/inactive vents only
+  // ADD airflow, so omitting them is conservative — it can only over-open).
+  final double ESC_EPS = 1e-9d
+
+  double floorThreshold
+  if (opts?.floorPct instanceof Number &&
+      !Double.isNaN(((Number) opts.floorPct).doubleValue()) &&
+      !Double.isInfinite(((Number) opts.floorPct).doubleValue())) {
+    floorThreshold = ((Number) opts.floorPct).doubleValue()
+  } else {
+    double sum = 0.0d
+    int vents = 0
+    candidates.each { d ->
+      int nv = Math.max(1, ((d.ventIds ?: []).size()))
+      sum += (d.target as double) * nv
+      vents += nv
+    }
+    floorThreshold = vents > 0 ? (sum / vents) : 0.0d
+  }
+
+  int floorStep = (opts?.granularity != null && (opts.granularity as int) > 0) ? (opts.granularity as int) : 5
+  int escGuard = 0
+  int escMax = (candidates.size() + 1) * ((int) (100 / floorStep) + 2)
+  while (dabV2DispatchedCombinedAirflow(candidates) < floorThreshold - ESC_EPS && escGuard < escMax) {
+    escGuard++
+    // Phase 1 — cheapest first: APPLY a held OPEN at its existing (comfort) target.
+    // Largest airflow gain first so the fewest moves close the floor gap. A held
+    // close (target <= current) never helps, so it is skipped.
+    def flip = null
+    double flipGain = 0.0d
+    candidates.each { d ->
+      if (d.apply) { return }
+      double gain = (d.target as double) - (d.currentOpen as double)
+      if (gain <= ESC_EPS) { return }
+      double weighted = gain * Math.max(1, ((d.ventIds ?: []).size()))
+      if (flip == null || weighted > flipGain) { flip = d; flipGain = weighted }
+    }
+    if (flip != null) { flip.apply = true; flip.mustOpen = true; continue }
+
+    // Phase 2 — fail-safe-to-floor (R4.11/R4.12; AGENTS.md priority #1): comfort
+    // capacity is exhausted but the floor is STILL unmet, so OPEN a vent BEYOND
+    // its allocator target, one grid step at a time, most-headroom first
+    // (deterministic roomId tie-break). Over-conditioning is the lesser evil
+    // versus leaving the system below the airflow-safety floor under throttling.
+    // The comfort-biased sfApply choke point is untouched; this dispatch-level
+    // override only ever RAISES airflow and only when an explicit floor is set.
+    def best = null
+    double bestHead = 0.0d
+    candidates.each { d ->
+      double cur = d.apply ? (d.target as double) : (d.currentOpen as double)
+      double head = 100.0d - cur
+      if (head <= ESC_EPS) { return }
+      if (best == null || head > bestHead ||
+          (head == bestHead && (d.roomId as String) < (best.roomId as String))) {
+        best = d; bestHead = head
+      }
+    }
+    if (best == null) { break }   // every vent already wide open — nothing more to give
+    double baseVal = best.apply ? (best.target as double) : (best.currentOpen as double)
+    best.target = Math.min(100.0d, baseVal + floorStep)
+    best.apply = true
+    best.mustOpen = true
   }
   return candidates
 }
@@ -2033,7 +3122,18 @@ def dispatchDabV2Targets(Map zoneResult, List roomData = null, Map opts = [:]) {
   if (dispatchLog.cycleId != cycleId) { dispatchLog = [cycleId: cycleId, keys: []] }
   List dispatchedKeys = (dispatchLog.keys in List) ? dispatchLog.keys : []
   List rooms = dabV2DispatchRoomView(safeTargets, roomData)
-  List plan = dabV2PlanGroupDispatch(safeTargets, floorReq, rooms, lastGroup, nowMs, opts)
+  // Supply the zone's clamped safety floor so the planner can escalate any
+  // load-bearing ordinary open the cap/cooldown would otherwise hold below the
+  // floor (Task 6.6; R4.11-R4.14). Caller-supplied opts (e.g. maxMovesPerCycle)
+  // are preserved; an explicit floorPct in opts wins.
+  Map planOpts = (opts == null) ? [:] : new HashMap(opts)
+  if (planOpts.floorPct == null) {
+    planOpts.floorPct = sfClampSafetyFloor(settings?.safetyFloorPct)
+  }
+  if (planOpts.granularity == null && settings?.ventGranularity) {
+    planOpts.granularity = settings.ventGranularity.toInteger()
+  }
+  List plan = dabV2PlanGroupDispatch(safeTargets, floorReq, rooms, lastGroup, nowMs, planOpts)
 
   plan.each { d ->
     if (!d.apply) {
@@ -2289,6 +3389,34 @@ boolean dabV2ShouldNotifyError(String key, Long nowMs = null) {
   errLog[key] = t
   if (state != null) { state.dabV2ErrorLog = errLog }
   return true
+}
+
+// --- Throttle status + notification coalescing (R4.15-R4.18, design §6.5) ----
+// dabV2RecordThrottle records that a throttle (HTTP 429 / rate-limit) occurred.
+// It sets a user-visible status (atomicState.throttleStatus, R4.17) and coalesces
+// repeated identical throttles within DABV2_ERROR_COALESCE_MS so a throttle storm
+// surfaces a SINGLE clear notification rather than flooding the log (R4.15/R4.16).
+// Returns true when the throttle is newly surfaced, false when coalesced within
+// the window. Time is injectable (`nowMs`) for deterministic testing.
+boolean dabV2RecordThrottle(Long nowMs = null) {
+  Long t = (nowMs != null ? nowMs : now()) as Long
+  // R4.17: the status always reflects that throttling occurred, independent of
+  // whether this particular occurrence is surfaced as a fresh notification.
+  if (atomicState != null) {
+    atomicState.throttleStatus = "Throttling occurred at ${t}; backing off and maintaining control toward the safety floor"
+  }
+  // R4.15/R4.16: reuse the established per-key coalescing window so repeated
+  // throttles within DABV2_ERROR_COALESCE_MS collapse into one surfaced status.
+  return dabV2ShouldNotifyError('throttle', t)
+}
+
+// dabV2NoteControlRecovered flips the user-visible status to "control recovered
+// after throttling" once the request path is healthy again (R4.18, design §6.5).
+void dabV2NoteControlRecovered(Long nowMs = null) {
+  Long t = (nowMs != null ? nowMs : now()) as Long
+  if (atomicState != null) {
+    atomicState.throttleStatus = "Control recovered after throttling at ${t}"
+  }
 }
 
 // --- 24 h status counters (R14.1) -------------------------------------------
@@ -2746,10 +3874,28 @@ def clearInstanceCache() {
 // End Instance-Based Caching Infrastructure
 // ------------------------------
 
-// Initialize request tracking
+// Initialize request tracking.
+//
+// R4.19 (Task 6.8): timeout-gated stuck-counter detect/reset (design §6.4). A
+// counter wedged at MAX_CONCURRENT_REQUESTS with no progress (no increment/
+// decrement stamping atomicState.requestTrackingTs) for longer than
+// REQUEST_TRACKING_STUCK_MS is detected and reset to 0 so the request path cannot
+// wedge permanently. The reset is GATED by the timeout: a legitimately busy
+// counter that is within the window (or has no recorded progress timestamp yet)
+// is preserved and never reset prematurely. The periodic cleanupPendingRequests()
+// (runEvery5Minutes) still provides a belt-and-suspenders scheduled reset.
 private initRequestTracking() {
   if (atomicState.activeRequests == null) {
     atomicState.activeRequests = 0
+    return
+  }
+  def currentActiveRequests = atomicState.activeRequests ?: 0
+  if (currentActiveRequests >= MAX_CONCURRENT_REQUESTS) {
+    Long lastProgress = (atomicState.requestTrackingTs != null) ? (atomicState.requestTrackingTs as Long) : null
+    if (lastProgress != null && (now() - lastProgress) >= REQUEST_TRACKING_STUCK_MS) {
+      log "Active request counter wedged at ${currentActiveRequests}/${MAX_CONCURRENT_REQUESTS} for >=${REQUEST_TRACKING_STUCK_MS}ms with no progress - resetting to 0 (R4.19)", 1
+      atomicState.activeRequests = 0
+    }
   }
 }
 
@@ -2774,6 +3920,9 @@ def canMakeRequest() {
 def incrementActiveRequests() {
   initRequestTracking()
   atomicState.activeRequests = (atomicState.activeRequests ?: 0) + 1
+  // R4.19: stamp the last-progress timestamp so the stuck-counter detect/reset is
+  // measured from the most recent real progress (design §6.4).
+  atomicState.requestTrackingTs = now()
 }
 
 // Decrement active request counter
@@ -2781,6 +3930,9 @@ def decrementActiveRequests() {
   initRequestTracking()
   def currentCount = atomicState.activeRequests ?: 0
   atomicState.activeRequests = Math.max(0, currentCount - 1)
+  // R4.19: a completing request is progress too, so a steadily-draining path is
+  // never mistaken for a wedge (design §6.4).
+  atomicState.requestTrackingTs = now()
   log "Decremented active requests from ${currentCount} to ${atomicState.activeRequests}", 1
 }
 
@@ -2848,6 +4000,58 @@ def isValidResponse(resp) {
   return true
 }
 
+// R4.1/R4.2 (Task 6.4, design §6.1): generalized HTTP 429 classification.
+// A 429 is a TRANSIENT throttle condition on BOTH the data and auth paths, not
+// an unrecoverable error and never the token-clearing re-auth path. Returns true
+// iff the response is a well-formed HTTP error with status 429.
+def isThrottleResponse(resp) {
+  try {
+    return resp != null && resp.hasError() && resp.getStatus() == 429
+  } catch (ignored) {
+    return false
+  }
+}
+
+// R4.4 (design §6.2): if a 429 carries a Retry-After header, surface it as ms so
+// dabv2BackoffIntervalMs can honor it (clamped to the cap). Tolerates a missing
+// header or non-numeric value by returning null (-> exponential backoff).
+def retryAfterMsFromResponse(resp) {
+  try {
+    def headers = resp?.respondsTo('getHeaders') ? resp.getHeaders() : null
+    if (!headers) { return null }
+    def ra = headers['Retry-After'] ?: headers['retry-after']
+    if (ra == null) { return null }
+    return (Long) (new BigDecimal(ra.toString().trim()) * 1000L).longValue()
+  } catch (ignored) {
+    return null
+  }
+}
+
+// R4.1/R4.3 (Task 6.4): data-path 429 handling shared by the async data
+// callbacks. Treats the 429 as transient and schedules a bounded retry of the
+// affected resource via the existing getDataAsync retry wrapper when the retry
+// context (uri/callback) is available. Preserves the still-valid token and never
+// routes through the token-clearing autoReauthenticate path. Returns true iff the
+// response was a 429 (so the caller should stop normal processing).
+def handleDataPathThrottle(resp, data) {
+  if (!isThrottleResponse(resp)) { return false }
+  int retryCount = (data?.retryCount ?: 0) as int
+  Long retryAfterMs = retryAfterMsFromResponse(resp)
+  if (data?.uri && data?.callback && retryCount < MAX_API_RETRY_ATTEMPTS) {
+    def retryData = [uri: data.uri, callback: data.callback, retryCount: retryCount + 1]
+    if (data.containsKey('data')) { retryData.data = data.data }
+    runInMillis(dabv2BackoffIntervalMs(retryCount, retryAfterMs), 'retryGetDataAsyncWrapper',
+                [data: retryData])
+    log "Data-path throttle (429): scheduled bounded retry of ${data.uri} " +
+        "(attempt ${retryCount + 1}/${MAX_API_RETRY_ATTEMPTS})", 2
+  } else if (data?.uri) {
+    log "Data-path throttle (429) for ${data.uri}: retry budget exhausted; deferring to next cycle", 2
+  } else {
+    log "Data-path throttle (429) for ${data?.deviceType}: no retry context; deferring to next cycle", 2
+  }
+  return true
+}
+
 // Updated getDataAsync to accept a String callback name with simple throttling.
 def getDataAsync(String uri, String callback, data = null, int retryCount = 0) {
   if (canMakeRequest()) {
@@ -2871,7 +4075,7 @@ def getDataAsync(String uri, String callback, data = null, int retryCount = 0) {
       } else {
         retryData.data = data
       }
-      runInMillis(API_CALL_DELAY_MS, 'retryGetDataAsyncWrapper', [data: retryData])
+      runInMillis(dabv2BackoffIntervalMs(retryCount, null), 'retryGetDataAsyncWrapper', [data: retryData])
     } else {
       logError "getDataAsync failed after ${MAX_API_RETRY_ATTEMPTS} retries for URI: ${uri}"
     }
@@ -2952,7 +4156,7 @@ def patchDataAsync(String uri, String callback, body, data = null, int retryCoun
   } else {
     if (retryCount < MAX_API_RETRY_ATTEMPTS) {
       def retryData = [uri: uri, callback: callback, body: body, data: data, retryCount: retryCount + 1]
-      runInMillis(API_CALL_DELAY_MS, 'retryPatchDataAsyncWrapper', [data: retryData])
+      runInMillis(dabv2BackoffIntervalMs(retryCount, null), 'retryPatchDataAsyncWrapper', [data: retryData])
     } else {
       logError "patchDataAsync failed after ${MAX_API_RETRY_ATTEMPTS} retries for URI: ${uri}"
     }
@@ -3010,7 +4214,7 @@ def authenticate(int retryCount = 0) {
     // If we can't make request now, reschedule authentication
     state.authInProgress = false
     if (retryCount < MAX_API_RETRY_ATTEMPTS) {
-      runInMillis(API_CALL_DELAY_MS, 'retryAuthenticateWrapper', [data: [retryCount: retryCount + 1]])
+      runInMillis(dabv2BackoffIntervalMs(retryCount, null), 'retryAuthenticateWrapper', [data: [retryCount: retryCount + 1]])
     } else {
       def err = "Authentication failed after ${MAX_API_RETRY_ATTEMPTS} retries"
       logError err
@@ -3039,13 +4243,29 @@ def handleAuthResponse(resp, data) {
     
     if (resp.hasError()) {
       def status = resp.getStatus()
+      // R4.2/R4.3 (Task 6.4, design §6.1): an auth-path 429 is a TRANSIENT
+      // throttle, not a terminal credential failure. Retry via the existing
+      // auth-retry wrapper with bounded backoff and PRESERVE the still-valid
+      // token (never clear it, never take the autoReauthenticate path).
+      if (status == 429) {
+        int retryCount = (data?.retryCount ?: 0) as int
+        Long retryAfterMs = retryAfterMsFromResponse(resp)
+        if (retryCount < MAX_API_RETRY_ATTEMPTS) {
+          log "Auth-path throttle (429): scheduling bounded auth retry " +
+              "(attempt ${retryCount + 1}/${MAX_API_RETRY_ATTEMPTS}); token preserved", 2
+          runInMillis(dabv2BackoffIntervalMs(retryCount, retryAfterMs), 'retryAuthenticateWrapper',
+                      [data: [retryCount: retryCount + 1]])
+        } else {
+          state.authError = "Authentication throttled (429) after ${MAX_API_RETRY_ATTEMPTS} retries"
+          logError state.authError
+        }
+        return
+      }
       def errorMsg = "Authentication failed with HTTP ${status}"
       if (status == 401) {
         errorMsg += ": Invalid credentials. Please verify your Client ID and Client Secret."
       } else if (status == 403) {
         errorMsg += ": Access forbidden. Please verify your OAuth credentials have proper permissions."
-      } else if (status == 429) {
-        errorMsg += ": Rate limited. Please wait a few minutes and try again."
       } else {
         errorMsg += ": ${resp.getErrorMessage() ?: 'Unknown error'}"
       }
@@ -3092,6 +4312,9 @@ def appButtonHandler(String btn) {
     case 'discoverDevices':
       discover()
       break
+    case 'addZone':
+      addZoneFromUi()
+      break
     case 'exportEfficiencyData':
       handleExportEfficiencyData()
       break
@@ -3100,6 +4323,12 @@ def appButtonHandler(String btn) {
       break
     case 'clearExportData':
       handleClearExportData()
+      break
+    case 'resetDabLearning':
+      // User-initiated DAB reset (R7.3). Scope is the UI-selected zone id (or the
+      // all-zones sentinel); confirmation is read from the UI flag inside
+      // resetDabLearning so nothing clears without an explicit user action (R7.20).
+      resetDabLearning((settings?.dabResetScope ?: DABV2_RESET_SCOPE_ALL) as String)
       break
   }
 }
@@ -3328,6 +4557,11 @@ def handleRoomsWithPucks(resp, data) {
 def handleDeviceList(resp, data) {
   decrementActiveRequests()  // Always decrement when response comes back
   log "handleDeviceList called for ${data?.deviceType}", 2
+  // R4.1 (Task 6.4): a data-path 429 is a transient throttle. Schedule a bounded
+  // retry of the affected resource and stop normal processing — do NOT fall into
+  // the generic isValidResponse error branch (which would drop the response with
+  // no retry).
+  if (handleDataPathThrottle(resp, data)) { return }
   if (!isValidResponse(resp)) {
     // Check if this was a pucks request that returned 404
     if (resp?.hasError() && resp.getStatus() == 404 && data?.deviceType == 'pucks') {
@@ -3356,15 +4590,29 @@ def handleDeviceList(resp, data) {
       } else if (it.type == 'pucks') {
         puckCount++
       }
+      // R1 blank-name fallback (design §R1.1, cross-ref R7.5/R7.32): mirror the
+      // ID-derived label fallback already used by handleAllPucks/handleRoomsWithPucks
+      // so a Puck 2 (or vent) shipped with a blank/default name is not dropped by
+      // makeRealDevice's null/blank-label guard.
+      def deviceId = it?.id?.toString()?.trim()
+      def label = it?.attributes?.name?.toString()?.trim()
+      if (!label) {
+        label = (it.type == 'pucks' ? "Puck-${deviceId}" : "Vent-${deviceId}")
+      }
       def device = [
         id   : it?.id,
         type : it?.type,
-        label: it?.attributes?.name
+        label: label
       ]
       def dev = makeRealDevice(device)
       if (dev && it.type == 'vents') {
         processVentTraits(dev, [data: it])
       }
+    } else {
+      // R1.22/R1.23: an unrecognized device `type` (or unexpected attribute
+      // shape) is logged at a diagnostic level and skipped per-device so
+      // discovery continues onboarding the recognized devices in the payload.
+      log "Skipping unrecognized device type '${it?.type}' (id=${it?.id})", 2
     }
   }
   log "Discovered ${ventCount} vents and ${puckCount} pucks", 3
@@ -3717,6 +4965,9 @@ def handlePuckGet(resp, data) {
     if (puckData?.attributes?.voltage != null) {
       try {
         def voltage = puckData.attributes.voltage as BigDecimal
+        // Map the puck-resource voltage onto the canonical voltage attribute
+        // (R1.9), then derive battery from it (R1.10).
+        sendEvent(data.device, [name: 'voltage', value: voltage, unit: 'V'])
         def battery = ((voltage - 2.0) / 1.6) * 100  // Assuming 2.0V = 0%, 3.6V = 100%
         battery = Math.max(0, Math.min(100, battery.round() as int))
         sendEvent(data.device, [name: 'battery', value: battery, unit: '%'])
@@ -3729,6 +4980,43 @@ def handlePuckGet(resp, data) {
         sendEvent(data.device, [name: attr, value: puckData.attributes[attr]])
       }
     }
+    // R1.6/R1.7/R1.8: map the shared puck diagnostic attributes (RSSI ->
+    // canonical rssi, firmware-version-s, motion/occupancy) with per-attribute
+    // null guards so partial Puck 2 payloads still process (R1.11/R1.12).
+    emitPuckDiagnostics(data.device, puckData.attributes)
+  }
+}
+
+// R1.6/R1.7/R1.8: shared puck diagnostic-attribute mapping used by both
+// handlePuckGet (pucks resource) and handlePuckReadingGet (sensor reading) so
+// every puck revision (V1 + Puck 2) surfaces the same canonical attributes with
+// per-attribute null guards. Missing optional fields are tolerated — each guard
+// simply skips, never aborting the rest of the mapping (R1.11/R1.12). The puck
+// revision is classified (never gated) for optional diagnostics only (R1.3).
+private emitPuckDiagnostics(device, Map attrs) {
+  if (!device || attrs == null) { return }
+  // RSSI: map current-rssi onto the canonical rssi attribute (R1.7).
+  if (attrs['current-rssi'] != null) {
+    sendEvent(device, [name: 'rssi', value: attrs['current-rssi'], unit: 'dBm'])
+  }
+  // Firmware: surface firmware-version-s where present (R1.8).
+  if (attrs['firmware-version-s'] != null) {
+    sendEvent(device, [name: 'firmware-version-s', value: attrs['firmware-version-s']])
+  }
+  // Motion/occupancy where exposed (R1.6): map the boolean occupancy flag onto
+  // the MotionSensor motion attribute.
+  if (attrs['occupied'] != null) {
+    sendEvent(device, [name: 'motion', value: (attrs['occupied'] ? 'active' : 'inactive')])
+  }
+  // Optional Puck-2 hardware-revision diagnostics (R1.3): classify, never gate.
+  // Unrecognized revisions still onboard; this only annotates the device.
+  try {
+    String rev = dabv2PuckRevision(attrs)
+    if (rev && rev != 'UNKNOWN') {
+      sendEvent(device, [name: 'puckHwVersion', value: rev])
+    }
+  } catch (Exception ignored) {
+    // classification is best-effort diagnostics only; never block mapping
   }
 }
 
@@ -3787,6 +5075,10 @@ def handlePuckReadingGet(resp, data) {
         log "Error calculating battery from reading: ${e.message}", 2
       }
     }
+    // R1.6/R1.7/R1.8: map RSSI -> canonical rssi, firmware-version-s, and
+    // motion/occupancy from the sensor reading with per-attribute null guards
+    // (R1.11/R1.12), identically to the puck-resource path (parity, R1.17/R1.25).
+    emitPuckDiagnostics(data.device, reading.attributes)
   }
 }
 
@@ -3841,12 +5133,42 @@ def processVentTraits(device, details) {
    'has-buzzed', 'updated-at', 'inactive'].each { attr ->
       traitExtract(device, details, attr, attr == 'percent-open' ? 'level' : attr, attr == 'percent-open' ? '%' : null)
    }
-   
-   // Map system-voltage to voltage attribute for Rule Machine compatibility
-   if (details?.data?.attributes?.'system-voltage' != null) {
-     def voltage = details.data.attributes['system-voltage']
+
+   // Voltage/battery population (R7.34/R7.35/R7.37). Populate the canonical
+   // `voltage` attribute from whichever path the reading provides: the
+   // resource-level `voltage` field OR `system-voltage` on the
+   // `vent-sensor-readings` sub-resource (do not assume only `system-voltage`).
+   // Derive `battery` via the existing (v-2.0)/1.6*100 map clamped 0..100.
+   // Guard before `sendEvent` so a null/non-numeric reading never overwrites
+   // the stored last-good value (state.lastGoodVoltage[ventId]).
+   def ventAttrs = details?.data?.attributes ?: [:]
+   def rawVoltage = ventAttrs['voltage'] != null ? ventAttrs['voltage'] : ventAttrs['system-voltage']
+   def voltage = asFiniteNumber(rawVoltage)
+   if (voltage != null) {
      sendEvent(device, [name: 'voltage', value: voltage, unit: 'V'])
+     def battery = ((voltage - 2.0) / 1.6) * 100  // 2.0V = 0%, 3.6V = 100%
+     battery = Math.max(0, Math.min(100, battery.round() as int))
+     sendEvent(device, [name: 'battery', value: battery, unit: '%'])
+     def ventId = device?.getId()
+     if (ventId != null) {
+       if (state.lastGoodVoltage == null) { state.lastGoodVoltage = [:] }
+       state.lastGoodVoltage[ventId] = voltage
+     }
    }
+}
+
+// Returns the value when it is a finite numeric value, otherwise null. Used to
+// guard voltage/battery population so a missing or non-numeric reading never
+// overwrites a stored last-good value (R7.37). Non-Number types (e.g. strings
+// such as 'n/a') and NaN/Infinity are treated as missing.
+private asFiniteNumber(value) {
+  if (value == null) { return null }
+  if (value instanceof Number) {
+    double d = value.doubleValue()
+    if (Double.isNaN(d) || Double.isInfinite(d)) { return null }
+    return value
+  }
+  return null
 }
 
 def processRoomTraits(device, details) {
@@ -3960,7 +5282,7 @@ def getStructureDataAsync(int retryCount = 0) {
   } else {
     // If we can't make request now, retry later
     if (retryCount < MAX_API_RETRY_ATTEMPTS) {
-      runInMillis(API_CALL_DELAY_MS, 'retryGetStructureDataAsyncWrapper', [data: [retryCount: retryCount + 1]])
+      runInMillis(dabv2BackoffIntervalMs(retryCount, null), 'retryGetStructureDataAsyncWrapper', [data: [retryCount: retryCount + 1]])
     } else {
       logError "getStructureDataAsync failed after ${MAX_API_RETRY_ATTEMPTS} retries"
     }
@@ -3981,15 +5303,24 @@ def handleStructureResponse(resp, data) {
     }
     
     def response = resp.getJson()
-    if (!response?.data?.first()) {
+    if (!response?.data) {
       logError 'No structure data available'
       return
     }
-    
-    def myStruct = response.data.first()
-    if (myStruct?.id) {
-      app.updateSetting('structureId', myStruct.id)
-      log "Structure loaded: id=${myStruct.id}, name=${myStruct.attributes?.name}", 2
+
+    // Deterministic Home-Id resolution (R2.15-R2.19): a configured id wins, a
+    // single structure is adopted, but >1 with none configured refuses to
+    // auto-pick the blind first() and requires an explicit selection. Never
+    // clear/overwrite an already-configured structureId.
+    def selection = dabv2SelectStructureId(response.data, settings?.structureId)
+    if (selection?.requireSelection) {
+      log 'Multiple structures found; select a Home Id in the app preferences before automation can run', 2
+      return
+    }
+    if (selection?.id) {
+      app.updateSetting('structureId', selection.id)
+      def chosen = response.data.find { it?.id == selection.id }
+      log "Structure loaded: id=${selection.id}, name=${chosen?.attributes?.name}", 2
     }
   } catch (Exception e) {
     logError "Structure data processing failed: ${e.message}"
@@ -4014,7 +5345,7 @@ def getStructureData(int retryCount = 0) {
     if (retryCount < MAX_API_RETRY_ATTEMPTS) {
       log "Structure data request delayed due to concurrent limit (attempt ${retryCount + 1}/${MAX_API_RETRY_ATTEMPTS})", 2
       // Schedule retry asynchronously to avoid blocking
-      runInMillis(API_CALL_DELAY_MS, 'retryGetStructureDataWrapper', [data: [retryCount: retryCount + 1]])
+      runInMillis(dabv2BackoffIntervalMs(retryCount, null), 'retryGetStructureDataWrapper', [data: [retryCount: retryCount + 1]])
       return
     } else {
       logError "getStructureData failed after ${MAX_API_RETRY_ATTEMPTS} attempts due to concurrent limits"
@@ -4042,14 +5373,22 @@ def getStructureData(int retryCount = 0) {
       }
       // Only log full response at debug level 1
       logDetails 'Structure response: ', response, 1
-      def myStruct = response.data.first()
-      if (!myStruct?.attributes) {
+      // Deterministic Home-Id resolution (R2.15-R2.19) on the blocking path too:
+      // route through the pure helper instead of the blind response.data.first().
+      // Never clear/overwrite an already-configured structureId.
+      def selection = dabv2SelectStructureId(response.data, settings?.structureId)
+      if (selection?.requireSelection) {
+        log 'Multiple structures found; select a Home Id in the app preferences before automation can run', 2
+        return
+      }
+      if (!selection?.id) {
         logError 'getStructureData: no structure data'
         return
       }
+      def myStruct = response.data.find { it?.id == selection.id }
       // Log only essential fields at level 3
-      log "Structure loaded: id=${myStruct.id}, name=${myStruct.attributes.name}, mode=${myStruct.attributes.mode}", 3
-      app.updateSetting('structureId', myStruct.id)
+      log "Structure loaded: id=${selection.id}, name=${myStruct?.attributes?.name}, mode=${myStruct?.attributes?.mode}", 3
+      app.updateSetting('structureId', selection.id)
     }
   } catch (Exception e) {
     decrementActiveRequests()
@@ -4057,7 +5396,7 @@ def getStructureData(int retryCount = 0) {
     if (retryCount < MAX_API_RETRY_ATTEMPTS) {
       log "Structure data request failed (attempt ${retryCount + 1}/${MAX_API_RETRY_ATTEMPTS}): ${e.message}", 2
       // Schedule retry asynchronously
-      runInMillis(API_CALL_DELAY_MS, 'retryGetStructureDataWrapper', [data: [retryCount: retryCount + 1]])
+      runInMillis(dabv2BackoffIntervalMs(retryCount, null), 'retryGetStructureDataWrapper', [data: [retryCount: retryCount + 1]])
     } else {
       logError "getStructureData failed after ${MAX_API_RETRY_ATTEMPTS} attempts: ${e.message}"
     }
@@ -4219,6 +5558,76 @@ def handleRoomPatch(resp, data) {
   traitExtract(data.device, resp.getJson(), 'active', 'room-active')
 }
 
+// ------------------------------
+// R3 — per-room temperature setpoints / offsets (config boundary + resolution)
+// ------------------------------
+
+// Rule-Machine / driver entry point for a per-room target or offset, mirroring
+// the `patchRoom` rule-control pattern. The inbound value arrives in the boundary
+// display unit and is converted to internal Celsius (R19.3), then clamped at the
+// config boundary with the SAME bounds the pure resolver enforces so UI- and
+// Rule-Machine-supplied values get identical treatment (R3.4/R3.5/R3.16).
+// mode 'absolute' persists absTargetC; mode 'offset' persists offsetC. (R3.14/R3.15)
+def patchRoomSetpoint(device, value, mode) {
+  def roomId = device?.currentValue('room-id')
+  if (!roomId || value == null || mode == null) { return }
+  BigDecimal valueC = dabV2BoundaryToCelsius(value)
+  if (valueC == null) { return }
+  if (!(state.perRoomSetpoints instanceof Map)) { state.perRoomSetpoints = [:] }
+  Map cfg = (state.perRoomSetpoints[roomId] instanceof Map) ?
+    (Map) state.perRoomSetpoints[roomId] : [absTargetC: null, offsetC: PER_ROOM_OFFSET_DEFAULT_C]
+  String m = mode.toString().trim().toLowerCase()
+  if (m == 'offset') {
+    cfg.offsetC = clampDecimal(valueC, PER_ROOM_OFFSET_MIN_C, PER_ROOM_OFFSET_MAX_C, PER_ROOM_OFFSET_DEFAULT_C)
+  } else {
+    cfg.absTargetC = clampDecimal(valueC, PER_ROOM_ABS_MIN_C, PER_ROOM_ABS_MAX_C, PER_ROOM_ABS_DEFAULT_C)
+  }
+  state.perRoomSetpoints[roomId] = cfg
+  log "Set per-room setpoint (${m}) for '${device?.currentValue('room-name')}' -> ${cfg}", 3
+}
+
+// Resolve a room's effective target in Celsius from its persisted config, deferring
+// the value math to the pure `dabv2ResolveRoomTargetC` (absolute wins; abs clamps
+// 10–32; offset clamps -5..+5). Surfaces a configuration warning when BOTH an
+// absolute target and a non-zero offset are present (the absolute target is
+// authoritative and the offset is ignored). (R3.1/R3.2/R3.4/R3.5)
+Map resolveRoomSetpoint(sharedSetpointC, rawAbsTargetC, rawOffsetC) {
+  BigDecimal shared = sharedSetpointC == null ? null : (sharedSetpointC as BigDecimal)
+  BigDecimal absTarget = rawAbsTargetC == null ? null : (rawAbsTargetC as BigDecimal)
+  BigDecimal offset = rawOffsetC == null ? null : (rawOffsetC as BigDecimal)
+  BigDecimal targetC = dabv2ResolveRoomTargetC(shared, absTarget, offset,
+    PER_ROOM_ABS_MIN_C, PER_ROOM_ABS_MAX_C, PER_ROOM_OFFSET_MIN_C, PER_ROOM_OFFSET_MAX_C)
+  boolean conflict = absTarget != null && offset != null && offset != 0.0G
+  String warning = conflict ?
+    "Per-room absolute target ${absTarget}C is authoritative; the configured offset ${offset}C is ignored." :
+    null
+  return [targetC: targetC, conflict: conflict, warning: warning]
+}
+
+// Build the room-id -> resolved-target-C map the allocator/legacy sizing consume,
+// from persisted per-room config. A room with a configured target but NO usable
+// temperature is OMITTED (deferred — never command on missing data, R3.12); a room
+// with no per-room config, or whose config resolves to the shared setpoint
+// (neutral), is also omitted so default behavior is unchanged (R3.3).
+Map dabV2BuildPerRoomTargetC(roomData, sharedSetpointC) {
+  Map out = [:]
+  if (!(roomData instanceof List)) { return out }
+  Map perRoom = (state.perRoomSetpoints instanceof Map) ? (Map) state.perRoomSetpoints : [:]
+  BigDecimal shared = sharedSetpointC == null ? null : (sharedSetpointC as BigDecimal)
+  roomData.each { rd ->
+    def roomId = rd?.roomId
+    if (roomId == null) { return }
+    Map cfg = (perRoom[roomId] instanceof Map) ? (Map) perRoom[roomId] : null
+    if (cfg == null) { return }                       // no per-room config -> neutral
+    if (!isDabV2UsableNumber(rd.tempC)) { return }    // R3.12 — defer on missing temp
+    Map res = resolveRoomSetpoint(shared, cfg.absTargetC, cfg.offsetC)
+    BigDecimal targetC = res.targetC as BigDecimal
+    if (shared != null && targetC == shared) { return }  // resolves to baseline -> neutral
+    out[roomId] = targetC
+  }
+  return out
+}
+
 def thermostat1ChangeTemp(evt) {
   log "Thermostat changed temp to: ${evt.value}", 2
   def temp = settings?.thermostat1?.currentValue('temperature')
@@ -4350,6 +5759,8 @@ def evaluateRebalancingVents() {
         // than the conventional-vent default constant (same value, explicit intent).
         if (currPercentOpen <= REBALANCING_MIN_OPEN_PERCENT) { continue }
         def roomTemp = getRoomTemp(vent)
+        // R1.21 defer: skip rebalancing evaluation when temperature is missing.
+        if (roomTemp == null) { continue }
         if (!hasRoomReachedSetpoint(hvacMode, setPoint, roomTemp, REBALANCING_TOLERANCE)) {
           continue
         }
@@ -4373,6 +5784,18 @@ def finalizeRoomStates(data) {
   // under Hubitat's atomicState lock), so they observe one consistent cycle id.
   if (data?.cycleId != null && atomicState.cycleSeq != null && data.cycleId != atomicState.cycleSeq) {
     log "Skipping stale finalizeRoomStates: cycleId ${data.cycleId} superseded by current cycle ${atomicState.cycleSeq}", 3
+    return
+  }
+
+  // R6.14 circulation no-learning gate: a fan-only / circulation cycle is a
+  // NON-conditioning action (treated as DABV2_ACTION_IDLE), so it records NO
+  // heating/cooling efficiency sample — learning from a cycle that was not
+  // actively conditioning would corrupt the per-room rates. Detection mirrors the
+  // pure helper (`dabv2DetectCirculation`), with an explicit `data.circulation`
+  // flag as a belt-and-suspenders gate set by the evaluate seam.
+  if (coerceBoolean(data?.circulation, false) ||
+      dabv2DetectCirculation(data?.hvacMode as String, data?.fanMode as String)) {
+    log 'Skipping room state finalization - circulation (fan-only) cycle records no efficiency sample (R6.14)', 3
     return
   }
 
@@ -4422,6 +5845,12 @@ def finalizeRoomStates(data) {
         // Calculate rate for this room (first vent in room)
         def percentOpen = (vent.currentValue('percent-open') ?: 0).toInteger()
         BigDecimal currentTemp = getRoomTemp(vent)
+        // R1.21 defer: do not learn a rate from a fabricated reading when the
+        // room has no resolvable temperature this cycle.
+        if (currentTemp == null) {
+          log "Deferring rate calc for '${roomName}': no resolvable temperature", 2
+          continue
+        }
         BigDecimal lastStartTemp = vent.currentValue('room-starting-temperature-c') ?: 0
         BigDecimal currentRate = vent.currentValue(ratePropName) ?: 0
         def newRate = calculateRoomChangeRate(lastStartTemp, currentTemp, totalCycleMinutes, percentOpen, currentRate)
@@ -4494,6 +5923,12 @@ def recordStartingTemperatures() {
         def vent = getChildDevice(ventId)
         if (!vent) { return }
         BigDecimal currentTemp = getRoomTemp(vent)
+        // R1.21 defer: skip recording a starting temperature when none is
+        // resolvable rather than persisting a fabricated 0°C baseline.
+        if (currentTemp == null) {
+          log "Deferring starting temperature for '${vent.currentValue('room-name')}': none resolvable", 2
+          return
+        }
         sendEvent(vent, [name: 'room-starting-temperature-c', value: currentTemp])
         log "Starting temperature for '${vent.currentValue('room-name')}': ${currentTemp}°C", 2
       } catch (err) {
@@ -4565,6 +6000,14 @@ def initializeRoomStates(String hvacMode) {
 }
 
 def adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId, String hvacMode, Map calculatedPercentOpen, additionalStandardVents) {
+  // Operate on a copy so the floor choke point never mutates the caller's
+  // pre-floor (comfort/overshoot-close) plan in place. This mirrors the pure
+  // DAB v2 `sfApply` contract (returns a fresh plan, leaves its input intact),
+  // so a per-room overshoot-closed plan stays observable alongside the floored
+  // plan (R3.10/R3.11). Callers already consume the return value.
+  if (calculatedPercentOpen != null) {
+    calculatedPercentOpen = new LinkedHashMap(calculatedPercentOpen)
+  }
   int totalDeviceCount = additionalStandardVents > 0 ? additionalStandardVents : 0
   def sumPercentages = totalDeviceCount * STANDARD_VENT_DEFAULT_OPEN
   calculatedPercentOpen.each { ventId, percent ->
@@ -4593,7 +6036,7 @@ def adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId, String 
   def combinedFlowPercentage = (100 * sumPercentages) / (totalDeviceCount * 100)
   if (combinedFlowPercentage >= MIN_COMBINED_VENT_FLOW) {
     log "Combined vent flow percentage (${combinedFlowPercentage}%) is greater than ${MIN_COMBINED_VENT_FLOW}%", 3
-    return calculatedPercentOpen
+    return reconcileGridToFloor(calculatedPercentOpen, additionalStandardVents)
   }
   log "Combined Vent Flow Percentage (${combinedFlowPercentage}) is lower than ${MIN_COMBINED_VENT_FLOW}%", 3
   def targetPercentSum = MIN_COMBINED_VENT_FLOW * totalDeviceCount
@@ -4620,6 +6063,62 @@ def adjustVentOpeningsToEnsureMinimumAirflowTarget(rateAndTempPerVentId, String 
       }
     }
   }
+  return reconcileGridToFloor(calculatedPercentOpen, additionalStandardVents)
+}
+
+// R5.10 / R5.12 — legacy grid reconciliation (the floor choke point runs AFTER
+// rounding). The dispatcher snaps each commanded position onto the configured
+// granularity grid (`roundToNearestMultiple`) AFTER this method has padded the
+// continuous plan up to the combined-airflow floor. A round-DOWN can drop the
+// combined airflow back below the floor, so re-check the plan ON THE GRID here
+// and, only when needed, raise raisable vents one grid step at a time until the
+// rounded plan still meets MIN_COMBINED_VENT_FLOW. This mirrors the DAB v2 path,
+// where the single `sfApply` choke point runs after `dabV2GroupNormalize`.
+//
+// Precedence (safety floor > inactive-room close > granularity grid): the
+// most-open vent is raised first, so a closed/inactive room is reopened only as a
+// last resort. When the plan already rounds to a floor-safe combined value (e.g.
+// the default 5% grid) this is a silent no-op that leaves the continuous plan
+// byte-for-byte unchanged (no extra log output, no value changes).
+private Map reconcileGridToFloor(Map calculatedPercentOpen, additionalStandardVents) {
+  if (!calculatedPercentOpen) { return calculatedPercentOpen }
+  int granularity = settings.ventGranularity ? settings.ventGranularity.toInteger() : 5
+  if (granularity <= 1) { return calculatedPercentOpen }
+  int standardCount = additionalStandardVents > 0 ? (additionalStandardVents as int) : 0
+  int deviceCount = standardCount + calculatedPercentOpen.size()
+  if (deviceCount <= 0) { return calculatedPercentOpen }
+  BigDecimal standardContribution = (standardCount as BigDecimal) * STANDARD_VENT_DEFAULT_OPEN
+
+  // Snapshot the on-grid plan the dispatcher would actually command.
+  Map gridOpen = [:]
+  calculatedPercentOpen.each { ventId, pct ->
+    gridOpen[ventId] = roundToNearestMultiple((pct ?: 0) as BigDecimal)
+  }
+
+  Closure roundedCombined = {
+    BigDecimal sum = standardContribution
+    gridOpen.each { ventId, pct -> sum += (pct as BigDecimal) }
+    return sum / deviceCount
+  }
+
+  Set bumped = [] as Set
+  int raises = 0
+  while (roundedCombined() < MIN_COMBINED_VENT_FLOW && raises < MAX_ITERATIONS) {
+    def raisable = gridOpen.findAll { ventId, pct -> (pct as int) < MAX_PERCENTAGE_OPEN }
+    if (!raisable) { break }
+    def pick = raisable.max { it.value }.key
+    gridOpen[pick] = Math.min(MAX_PERCENTAGE_OPEN as int, (gridOpen[pick] as int) + granularity)
+    bumped << pick
+    raises++
+  }
+
+  // Rewrite ONLY the vents reconciliation actually raised (snapped to the grid so
+  // dispatch rounding is a no-op on them). Every other vent keeps its continuous
+  // value — the dispatcher still rounds it, but the floor guarantee already holds
+  // because `roundedCombined()` accounted for those rounded contributions. This
+  // keeps a grid-safe plan byte-for-byte unchanged and never zeroes a small vent
+  // that this method did not deliberately raise.
+  bumped.each { ventId -> calculatedPercentOpen[ventId] = gridOpen[ventId] }
   return calculatedPercentOpen
 }
 
@@ -4635,6 +6134,13 @@ def getAttribsPerVentId(ventsByRoomId, String hvacMode) {
         def isActive = vent.currentValue('room-active') == 'true'
         def roomTemp = getRoomTemp(vent)
         def roomName = vent.currentValue('room-name') ?: ''
+        // R1.21 defer: a room with no resolvable temperature is omitted from the
+        // open-percentage computation this cycle (left at its last commanded
+        // position) rather than commanded on a fabricated 0°C reading.
+        if (roomTemp == null) {
+          log "Deferring open-% calc for '${roomName}': no resolvable temperature", 2
+          return
+        }
         
         // Log rooms with zero efficiency for debugging
         if (rate == 0) {
@@ -4651,23 +6157,31 @@ def getAttribsPerVentId(ventsByRoomId, String hvacMode) {
   return rateAndTemp
 }
 
-def calculateOpenPercentageForAllVents(rateAndTempPerVentId, String hvacMode, BigDecimal setpoint, longestTime, boolean closeInactive = true) {
+def calculateOpenPercentageForAllVents(rateAndTempPerVentId, String hvacMode, BigDecimal setpoint, longestTime,
+    boolean closeInactive = true, Map perRoomTargetByVentId = null) {
   def percentOpenMap = [:]
   rateAndTempPerVentId.each { ventId, stateVal ->
     try {
+      // R3.9: size and overshoot-close each room against its OWN resolved per-room
+      // target when supplied; absent (or equal to the shared setpoint) -> identical
+      // behavior to the shared-setpoint baseline.
+      BigDecimal resolvedTarget = setpoint
+      if (perRoomTargetByVentId != null && perRoomTargetByVentId[ventId] != null) {
+        resolvedTarget = perRoomTargetByVentId[ventId] as BigDecimal
+      }
       def percentageOpen = MIN_PERCENTAGE_OPEN
       if (closeInactive && !stateVal.active) {
         log "Closing vent on inactive room: ${stateVal.name}", 3
-      } else if (hasRoomReachedSetpoint(hvacMode, setpoint, stateVal.temp)) {
+      } else if (hasRoomReachedSetpoint(hvacMode, resolvedTarget, stateVal.temp)) {
         // Directional setpoint check takes precedence over the rate-too-low shortcut:
-        // a room at/past setpoint in the conditioning direction must close (overshoot-close).
+        // a room at/past its resolved target in the conditioning direction must close (overshoot-close).
         def msg = hvacMode == COOLING ? 'cooler' : 'warmer'
-        log "Closing vent: '${stateVal.name}' is already ${msg} (${stateVal.temp}) than setpoint (${setpoint})", 3
+        log "Closing vent: '${stateVal.name}' is already ${msg} (${stateVal.temp}) than target (${resolvedTarget})", 3
       } else if (stateVal.rate < MIN_TEMP_CHANGE_RATE) {
         log "Opening vent at max since change rate is too low: ${stateVal.name}", 3
         percentageOpen = MAX_PERCENTAGE_OPEN
       } else {
-        percentageOpen = calculateVentOpenPercentage(stateVal.name, stateVal.temp, setpoint, hvacMode, stateVal.rate, longestTime)
+        percentageOpen = calculateVentOpenPercentage(stateVal.name, stateVal.temp, resolvedTarget, hvacMode, stateVal.rate, longestTime)
       }
       percentOpenMap[ventId] = percentageOpen
     } catch (err) {

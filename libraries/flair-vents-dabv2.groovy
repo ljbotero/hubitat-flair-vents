@@ -628,7 +628,22 @@ Map allocNewGateContext(Map overrides = [:]) {
   return base
 }
 
-Map allocAllocate(List rooms, double setpointC, String mode, Map s, Map duct = null) {
+// Resolve the effective setpoint a single room should be driven toward. When no
+// per-room target map is supplied (null/empty) OR a room has no entry, this
+// returns the shared thermostat setpoint unchanged, so callers/fixtures that omit
+// the map (or supply an all-setpoint map) see byte-for-byte identical behavior
+// (R3.3). When a room carries its own resolved target, that target is used so the
+// room's balancing converges toward its own comfort level (R3.7).
+double allocRoomSetpoint(Map r, double setpointC, Map perRoomTargetC) {
+  if (perRoomTargetC == null || perRoomTargetC.isEmpty() || r == null || r.roomId == null) {
+    return setpointC
+  }
+  Object t = perRoomTargetC.get(r.roomId)
+  return t == null ? setpointC : ((Number) t).doubleValue()
+}
+
+Map allocAllocate(List rooms, double setpointC, String mode, Map s, Map duct = null,
+    Map perRoomTargetC = null) {
   boolean heating = allocIsHeating(mode)
   double hyst = (double) s.hysteresisC
   int step = Math.max(1, (int) s.granularity)
@@ -642,7 +657,8 @@ Map allocAllocate(List rooms, double setpointC, String mode, Map s, Map duct = n
     for (Object ro : rooms) {
       Map r = (Map) ro
       if (r == null || !((boolean) r.active) || r.roomId == null) { continue }
-      if (allocIsSatisfied(r, setpointC, heating, hyst)) {
+      double sp = allocRoomSetpoint(r, setpointC, perRoomTargetC)
+      if (allocIsSatisfied(r, sp, heating, hyst)) {
         targets.put((String) r.roomId, 0.0d)
         finishMin.put((String) r.roomId, 0.0d)
       } else {
@@ -655,15 +671,17 @@ Map allocAllocate(List rooms, double setpointC, String mode, Map s, Map duct = n
   Map bottleneck = null
   for (Object ro : unsatisfied) {
     Map r = (Map) ro
+    double sp = allocRoomSetpoint(r, setpointC, perRoomTargetC)
     double rateAtKnee = Math.max(ALLOC_RATE_FLOOR, ((double) r.efficiency) * allocFlowAt(r, (double) allocKneeOf(r)))
-    double tau = allocConvErr(r, setpointC, heating, hyst) / rateAtKnee
+    double tau = allocConvErr(r, sp, heating, hyst) / rateAtKnee
     if (tau > tauStar) { tauStar = tau; bottleneck = r }
   }
 
   for (Object ro : unsatisfied) {
     Map r = (Map) ro
     int knee = allocKneeOf(r)
-    double err = allocConvErr(r, setpointC, heating, hyst)
+    double sp = allocRoomSetpoint(r, setpointC, perRoomTargetC)
+    double err = allocConvErr(r, sp, heating, hyst)
     double flowAtKnee = allocFlowAt(r, (double) knee)
     double leak = allocLeakOf(r)
 
@@ -691,22 +709,23 @@ Map allocAllocate(List rooms, double setpointC, String mode, Map s, Map duct = n
     finishMin.put((String) r.roomId, err / rate)
   }
 
-  allocDetectAirflowLimited(rooms, targets, setpointC, heating, s, airflowLimited)
+  allocDetectAirflowLimited(rooms, targets, setpointC, heating, s, airflowLimited, perRoomTargetC)
 
   if (((boolean) s.crosscoupling) && !airflowLimited.isEmpty() && !allocDuctVetoes(duct, heating, setpointC)) {
-    allocApplyCrossCoupling(rooms, targets, finishMin, setpointC, heating, hyst, s)
+    allocApplyCrossCoupling(rooms, targets, finishMin, setpointC, heating, hyst, s, perRoomTargetC)
   }
 
   return [
     targets           : targets,
     predictedFinishMin: finishMin,
-    predictedSpreadC  : allocPredictedSpread(rooms, targets, mode, setpointC, (double) s.horizonMin),
+    predictedSpreadC  : allocPredictedSpread(rooms, targets, mode, setpointC, (double) s.horizonMin, perRoomTargetC),
     airflowLimited    : airflowLimited,
     floorBinding      : false
   ]
 }
 
-double allocPredictedSpread(List rooms, Map targets, String mode, double setpointC, double horizonMin) {
+double allocPredictedSpread(List rooms, Map targets, String mode, double setpointC, double horizonMin,
+    Map perRoomTargetC = null) {
   if (rooms == null || targets == null) { return 0.0d }
   boolean heating = allocIsHeating(mode)
   double minT = Double.POSITIVE_INFINITY
@@ -715,6 +734,7 @@ double allocPredictedSpread(List rooms, Map targets, String mode, double setpoin
   for (Object ro : rooms) {
     Map r = (Map) ro
     if (r == null || !((boolean) r.active) || r.roomId == null) { continue }
+    double sp = allocRoomSetpoint(r, setpointC, perRoomTargetC)
     Object tgt = targets.get(r.roomId)
     double aperture = tgt == null ? 0.0d : dabv2Clamp(((Number) tgt).doubleValue(), ALLOC_APERTURE_MIN, ALLOC_APERTURE_MAX)
     double rate = Math.max(0.0d, ((double) r.efficiency) * allocFlowAt(r, aperture))
@@ -722,10 +742,10 @@ double allocPredictedSpread(List rooms, Map targets, String mode, double setpoin
     double projected
     if (heating) {
       projected = tempC + (rate * horizonMin)
-      if (tempC >= setpointC) { projected = Math.min(projected, setpointC) }
+      if (tempC >= sp) { projected = Math.min(projected, sp) }
     } else {
       projected = tempC - (rate * horizonMin)
-      if (tempC <= setpointC) { projected = Math.max(projected, setpointC) }
+      if (tempC <= sp) { projected = Math.max(projected, sp) }
     }
     if (projected < minT) { minT = projected }
     if (projected > maxT) { maxT = projected }
@@ -780,7 +800,12 @@ double allocInverseOf(Map r, double flowFraction) {
 
 double allocRoundToGranularity(double value, int step) {
   if (step <= 0) { return dabv2Clamp(value, 0.0d, 100.0d) }
-  double rounded = Math.rint(value / (double) step) * (double) step
+  // Round the computed intermediate target to the configured grid using
+  // round-half-UP (Math.round), so an exactly-halfway value snaps to the HIGHER
+  // multiple deterministically (R5.3) and stays consistent with the legacy
+  // `roundToNearestMultiple` and `dabV2GroupNormalize`. (Math.rint rounds
+  // half-to-even, which sent ties to the LOWER multiple and violated R5.3.)
+  double rounded = (double) (Math.round(value / (double) step) * (long) step)
   return dabv2Clamp(rounded, 0.0d, 100.0d)
 }
 
@@ -789,16 +814,17 @@ double allocOffTargetError(Map r, double setpointC, boolean heating) {
 }
 
 void allocDetectAirflowLimited(List rooms, Map targets, double setpointC, boolean heating,
-    Map s, Set<String> airflowLimited) {
+    Map s, Set<String> airflowLimited, Map perRoomTargetC = null) {
   if (rooms == null) { return }
   for (Object ro : rooms) {
     Map r = (Map) ro
     if (r == null || !((boolean) r.active) || r.roomId == null) { continue }
     Object tgt = targets.get(r.roomId)
     if (tgt == null) { continue }
+    double sp = allocRoomSetpoint(r, setpointC, perRoomTargetC)
     double aperture = ((Number) tgt).doubleValue()
     double knee = (double) allocKneeOf(r)
-    double off = allocOffTargetError(r, setpointC, heating)
+    double off = allocOffTargetError(r, sp, heating)
     if (aperture >= (knee - ((double) s.airflowLimitedMarginPct)) && off > ((double) s.airflowLimitedErrorC)) {
       airflowLimited.add((String) r.roomId)
     }
@@ -806,18 +832,19 @@ void allocDetectAirflowLimited(List rooms, Map targets, double setpointC, boolea
 }
 
 void allocApplyCrossCoupling(List rooms, Map targets, Map finishMin,
-    double setpointC, boolean heating, double hyst, Map s) {
+    double setpointC, boolean heating, double hyst, Map s, Map perRoomTargetC = null) {
   for (Object ro : rooms) {
     Map r = (Map) ro
     if (r == null || !((boolean) r.active) || r.roomId == null) { continue }
     if (!targets.containsKey(r.roomId)) { continue }
-    if (allocOffTargetError(r, setpointC, heating) <= 0.0d) {
+    double sp = allocRoomSetpoint(r, setpointC, perRoomTargetC)
+    if (allocOffTargetError(r, sp, heating) <= 0.0d) {
       targets.put((String) r.roomId, 0.0d)
-      if (allocIsSatisfied(r, setpointC, heating, hyst)) {
+      if (allocIsSatisfied(r, sp, heating, hyst)) {
         finishMin.put((String) r.roomId, 0.0d)
       } else {
         double rate = Math.max(ALLOC_RATE_FLOOR, ((double) r.efficiency) * allocFlowAt(r, 0.0d))
-        finishMin.put((String) r.roomId, allocConvErr(r, setpointC, heating, hyst) / rate)
+        finishMin.put((String) r.roomId, allocConvErr(r, sp, heating, hyst) / rate)
       }
     }
   }
@@ -1311,3 +1338,198 @@ private Object mioDeepCopyValue(Object value) {
 }
 
 
+// ---- v0.236 pure helpers (R1/R2/R3/R4/R6) ----
+// Six zone-agnostic, side-effect-free helpers operating on plain Maps/lists/
+// scalars. PURE: no Hubitat APIs, wall-clock, randomness, or state. Each one
+// pins a behavior the app wires up later; the math lives here so the off-device
+// Spock harness and the on-device sandbox share identical source.
+
+// Clamp a BigDecimal into [lo, hi] (BigDecimal-native sibling of dabv2Clamp).
+BigDecimal dabv2ClampBd(BigDecimal value, BigDecimal lo, BigDecimal hi) {
+  if (value < lo) { return lo }
+  if (value > hi) { return hi }
+  return value
+}
+
+// ---- R3: per-room effective target (°C-internal) ----
+// Absolute target wins over a non-zero offset; a missing absolute target falls
+// back to the shared setpoint plus the (clamped) signed offset. Default offset
+// 0 with no absolute target resolves exactly to the shared setpoint (today's
+// behavior). Absolute clamps to [absMinC, absMaxC]; offset clamps to
+// [offMinC, offMaxC] before it is added. (R3.2–R3.6)
+BigDecimal dabv2ResolveRoomTargetC(
+    BigDecimal sharedSetpointC,
+    BigDecimal roomAbsTargetC,
+    BigDecimal roomOffsetC,
+    BigDecimal absMinC = 10.0G, BigDecimal absMaxC = 32.0G,
+    BigDecimal offMinC = -5.0G, BigDecimal offMaxC = 5.0G) {
+  if (roomAbsTargetC != null) {
+    return dabv2ClampBd(roomAbsTargetC, absMinC, absMaxC)
+  }
+  BigDecimal offset = roomOffsetC == null ? 0.0G : roomOffsetC
+  return sharedSetpointC + dabv2ClampBd(offset, offMinC, offMaxC)
+}
+
+// ---- R4: bounded retry backoff (ms) ----
+// When the server supplies a Retry-After value, honor it clamped to the cap;
+// otherwise use exponential backoff (baseMs * 2^attempt) clamped to the cap.
+// Never exceeds capMs. (R4.4/R4.5/R4.6/R4.7)
+long dabv2BackoffIntervalMs(int attempt, Long retryAfterMs, long baseMs = 1000L,
+                            long capMs = 60000L) {
+  if (retryAfterMs != null) {
+    return Math.min(retryAfterMs.longValue(), capMs)
+  }
+  int exp = attempt < 0 ? 0 : attempt
+  double scaled = (double) baseMs * Math.pow(2.0d, (double) exp)
+  if (!Double.isFinite(scaled) || scaled >= (double) capMs) { return capMs }
+  return Math.min((long) scaled, capMs)
+}
+
+// ---- R6: circulation (fan-only) detection ----
+// True when the HVAC operating state is explicitly fan-only, or as a fallback
+// when the fan is forced on while the system is idle. Anything else (actively
+// conditioning, idle+auto, no fan signal) is not circulation. (R6.1/R6.2/R6.4)
+boolean dabv2DetectCirculation(String operatingState, String fanMode) {
+  if ('fan only'.equals(operatingState)) { return true }
+  if ('on'.equals(fanMode) && 'idle'.equals(operatingState)) { return true }
+  return false
+}
+
+// ---- R6: circulation vent targets ----
+// Map each eligible vent to the circulation %. When closeInactive is true only
+// vents in active rooms are targeted (inactive-room vents are excluded); when
+// false every vent is targeted regardless of room activity. roomActiveById is
+// keyed by vent id (per-vent active flag); a missing/false entry marks a vent
+// as inactive. The app routes the result through sfApply so the floor wins.
+// (R6.3/R6.10–R6.13)
+Map dabv2CirculationTargets(List ventIds, BigDecimal circulationPct,
+                            Map roomActiveById, boolean closeInactive) {
+  Map targets = new LinkedHashMap()
+  if (ventIds == null) { return targets }
+  for (Object vidObj : ventIds) {
+    String vid = vidObj == null ? null : String.valueOf(vidObj)
+    if (vid == null) { continue }
+    if (closeInactive) {
+      Object active = roomActiveById == null ? null : roomActiveById.get(vid)
+      if (active != Boolean.TRUE) { continue }
+    }
+    targets.put(vid, circulationPct)
+  }
+  return targets
+}
+
+// ---- R7.4: configurable minimum vent opening ----
+// Raise each ACTIVE room-group's commanded aperture up to at least the resolved
+// minimum opening so balancing never commands a vent below the user's floor for
+// that vent (R7.22/R7.26). The per-vent override perVentMin[ventId] wins over
+// the global minimum (R7.23/R7.24); when several vents share a room-group the
+// group value is raised to the MAX of their resolved minimums so no member of
+// the group falls below its own minimum (consistent with no-group-split). An
+// inactive room-group that is being CLOSED (closeInactive) is left UNTOUCHED so
+// the minimum never overrides the inactive-room close (R7.27/R7.28) — the floor
+// (sfApply, run AFTER this) may still reopen it as a last resort. Every value is
+// clamped to 0–100 (R7.25). PURE: no Hubitat/clock/RNG/state.
+//
+//   targets       : room-keyed commanded apertures (post group-normalize)
+//   rooms         : per-room records [roomId, active, ventIds]
+//   globalMinPct  : global minimum opening % (clamped 0–100 here)
+//   perVentMin    : optional map ventId -> minimum % (overrides the global)
+//   closeInactive : whether inactive rooms are being auto-closed
+// (R7.22–R7.28)
+Map dabv2ApplyMinOpening(Map targets, List rooms, Object globalMinPct,
+                         Map perVentMin, boolean closeInactive) {
+  Map out = new LinkedHashMap()
+  if (targets == null) { return out }
+  double gMin = globalMinPct instanceof Number ?
+    dabv2Clamp(((Number) globalMinPct).doubleValue(), 0.0d, 100.0d) : 0.0d
+  Map roomById = new LinkedHashMap()
+  if (rooms != null) {
+    for (Object r : rooms) {
+      if (r != null && ((Map) r).roomId != null) {
+        roomById.put(String.valueOf(((Map) r).roomId), r)
+      }
+    }
+  }
+  for (Map.Entry e : targets.entrySet()) {
+    String roomId = String.valueOf(e.key)
+    double cur = e.value == null ? 0.0d : ((Number) e.value).doubleValue()
+    Map room = (Map) roomById.get(roomId)
+    boolean active = room == null ? true : ((boolean) room.active)
+    // Respect the inactive-room close: never raise an inactive (closed) group.
+    if (!active && closeInactive) { out.put(roomId, cur); continue }
+    // Effective minimum for this group = MAX over its vents of (per-vent override
+    // else global). With no vent list, fall back to the global minimum.
+    double eff = gMin
+    List ventIds = room == null ? null : (List) room.ventIds
+    if (ventIds != null && !ventIds.isEmpty()) {
+      eff = 0.0d
+      for (Object vidObj : ventIds) {
+        String vid = vidObj == null ? null : String.valueOf(vidObj)
+        double m = gMin
+        if (vid != null && perVentMin != null && perVentMin.get(vid) instanceof Number) {
+          m = dabv2Clamp(((Number) perVentMin.get(vid)).doubleValue(), 0.0d, 100.0d)
+        }
+        if (m > eff) { eff = m }
+      }
+    }
+    double raised = cur < eff ? eff : cur
+    out.put(roomId, dabv2Clamp(raised, 0.0d, 100.0d))
+  }
+  return out
+}
+
+// ---- R2: deterministic structure (Home Id) selection ----
+// A configured id present in the response wins; a single returned structure is
+// adopted automatically; more than one structure with none configured (or a
+// configured id absent from the response) refuses to auto-pick and requires an
+// explicit selection. Replaces the blind response.data.first() shortcut.
+// (R2.17/R2.18)
+Map dabv2SelectStructureId(List structures, String configuredId) {
+  List list = structures == null ? new ArrayList() : structures
+  if (configuredId != null && !configuredId.isEmpty()) {
+    for (Object sObj : list) {
+      if (sObj instanceof Map && configuredId.equals(String.valueOf(((Map) sObj).get('id')))) {
+        return [id: configuredId, requireSelection: false]
+      }
+    }
+  }
+  if (list.size() == 1 && list.get(0) instanceof Map) {
+    return [id: ((Map) list.get(0)).get('id'), requireSelection: false]
+  }
+  return [id: null, requireSelection: true]
+}
+
+// ---- R1: puck revision classification (classify, never gate) ----
+// 'PUCK2' when the puck attributes carry hardware-version-name 'ep_puck2' or
+// the hardware-version sub-resource reports device-type 'PUCK2'; 'PUCK' when
+// device-type is 'PUCK'; otherwise 'UNKNOWN'. Unrecognized revisions are still
+// onboarded by the caller — this only drives optional diagnostics. (R1.2/R1.3)
+String dabv2PuckRevision(Map attrs, Map hwVersionSub = null) {
+  String hwName = attrs == null ? null : (attrs.get('hardware-version-name') as String)
+  String deviceType = null
+  if (hwVersionSub != null && hwVersionSub.get('attributes') instanceof Map) {
+    deviceType = ((Map) hwVersionSub.get('attributes')).get('device-type') as String
+  }
+  if ('ep_puck2'.equals(hwName) || 'PUCK2'.equals(deviceType)) { return 'PUCK2' }
+  if ('PUCK'.equals(deviceType)) { return 'PUCK' }
+  return 'UNKNOWN'
+}
+
+// ---- R7.2: HPM channel-aware display-version derivation ----
+// Derive the displayed version from the HPM manifest fields. The stable channel
+// derives from `version` (R7.6); the beta / early-release channel derives from
+// `betaVersion` (R7.7). A null / missing / blank field (or the literal string
+// 'null') falls back to the documented fallback label so the UI can NEVER
+// render a null-derived "vnullbeta" string (R7.8). Pure: no Hubitat APIs, no
+// state, operates on a plain manifest Map. `fallbackLabel` defaults to a safe,
+// non-null placeholder when a caller omits it.
+String dabv2DeriveDisplayVersion(Map manifest, String channel, String fallbackLabel = 'unknown') {
+  String fb = (fallbackLabel == null || fallbackLabel.trim().isEmpty()) ? 'unknown' : fallbackLabel.trim()
+  if (manifest == null) { return fb }
+  boolean beta = (channel != null && 'beta'.equals(channel.trim().toLowerCase()))
+  Object raw = beta ? manifest.get('betaVersion') : manifest.get('version')
+  if (raw == null) { return fb }
+  String s = String.valueOf(raw).trim()
+  if (s.isEmpty() || 'null'.equalsIgnoreCase(s)) { return fb }
+  return s
+}

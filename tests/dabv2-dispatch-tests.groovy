@@ -44,6 +44,11 @@ class Dabv2DispatchTest extends Specification {
   private Map stateMap
   private Map atomicStateMap
   private Map<String, Object> devices
+  // Captures runInMillis(...) scheduled by the production retry path. Captured at
+  // the executor boundary (not via a script metaClass override) so the call is
+  // intercepted regardless of the delay argument's runtime type (the bounded
+  // backoff path passes a primitive `long`).
+  private List scheduledMillis = []
 
   // A minimal fake vent: tracks its confirmed `percent-open` plus sendEvent calls.
   // Coerced to ChildDeviceWrapper so the sandbox's getChildDevice cast succeeds.
@@ -64,11 +69,15 @@ class Dabv2DispatchTest extends Specification {
     log = new CapturingLog()
     stateMap = ([flairAccessToken: TOKEN] + state)
     atomicStateMap = atomic
+    scheduledMillis = []
     AppExecutor executorApi = Mock {
       _ * getState() >> stateMap
       _ * getAtomicState() >> atomicStateMap
       _ * getLog() >> log
       _ * getChildDevice(_) >> { String id -> devices[id] }
+      _ * runInMillis(_, _, _) >> { d, String handler, Map opts ->
+        scheduledMillis << [ms: d, handler: handler]
+      }
     }
     def sandbox = new HubitatAppSandbox(APP_FILE)
     def script = sandbox.run('api': executorApi,
@@ -207,15 +216,13 @@ class Dabv2DispatchTest extends Specification {
     def script = buildScript([:], [:], [activeRequests: 8])   // 8 == MAX_CONCURRENT_REQUESTS
     int httpCalls = 0
     script.metaClass.asynchttpPatch = { String cb, Map p, d -> httpCalls++ }
-    int scheduled = 0
-    script.metaClass.runInMillis = { long ms, String handler, Map opts -> scheduled++ }
 
     when: 'a vent command is issued while at the concurrency cap'
     script.patchVent(vent, 80)
 
     then: 'no HTTP PATCH is fired; the request is deferred instead (no 429 storm)'
     httpCalls == 0
-    scheduled == 1
+    scheduledMillis.size() == 1
   }
 
   // ---------------------------------------------------------------------------

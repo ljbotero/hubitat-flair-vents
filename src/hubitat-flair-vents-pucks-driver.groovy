@@ -1,6 +1,6 @@
 /**
  *  Hubitat Flair Pucks Driver
- *  Version 0.234
+ *  Version 0.236
  *
  *  Copyright 2024 Jaime Botero. All Rights Reserved
  *
@@ -18,6 +18,12 @@
  *
  */
 
+import groovy.transform.Field
+
+// Driver version string, surfaced on the device detail page so it can be
+// reported in support requests (R7.1, R7.4, R7.5).
+@Field static final String VERSION = '0.236'
+
 metadata {
     definition(name: 'Flair pucks', namespace: 'bot.flair', author:  'Jaime Botero') {
         capability 'Refresh'
@@ -28,9 +34,11 @@ metadata {
         capability 'VoltageMeasurement'
         
         // Puck specific attributes
+        attribute 'driverVersion', 'string'
         attribute 'current-rssi', 'number'
         attribute 'rssi', 'number'
         attribute 'firmware-version-s', 'string'
+        attribute 'puckHwVersion', 'string'
         attribute 'inactive', 'enum', ['true', 'false']
         attribute 'created-at', 'string'
         attribute 'updated-at', 'string'
@@ -106,6 +114,7 @@ def uninstalled() {
 
 def initialize() {
   logDebug('initialize')
+  sendEvent(name: 'driverVersion', value: VERSION)
   refresh()
 }
 

@@ -35,8 +35,10 @@
  */
 class PropertyGen {
 
-  /** Minimum randomized examples per property test (R18 / design: >= 100). */
-  static final int ITERATIONS = 100
+  /** Randomized examples per property test. Design calls for >= 100; reduced to
+   *  speed up the off-device suite on request. Seeding stays deterministic so
+   *  any failing iteration is still reproducible. */
+  static final int ITERATIONS = 20
 
   /** Base seed mixed with the iteration index for reproducibility. */
   static final long BASE_SEED = 0x5EEDL

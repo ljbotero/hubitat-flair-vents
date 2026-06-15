@@ -1,7 +1,7 @@
 
 /**
  *  Hubitat Flair Vents Driver
- *  Version 0.234
+ *  Version 0.236
  *
  *  Copyright 2024 Jaime Botero. All Rights Reserved
  *
@@ -19,12 +19,20 @@
  *
  */
 
+import groovy.transform.Field
+
+// Driver version string, surfaced on the device detail page so it can be
+// reported in support requests (R7.1, R7.3, R7.5).
+@Field static final String VERSION = '0.236'
+
 metadata {
     definition(name: 'Flair vents', namespace: 'bot.flair', author:  'Jaime Botero') {
         capability 'Refresh'
         capability 'SwitchLevel'
         capability 'VoltageMeasurement'
+        capability 'Battery'
 
+        attribute 'driverVersion', 'string'
         attribute 'rssi', 'number'
         //attribute "percent-open-reason", "string"
         attribute 'connected-gateway-name', 'string'
@@ -76,6 +84,7 @@ metadata {
         attribute 'room-heating-rate', 'number'
 
         command 'setRoomActive', [[name: 'active*', type: 'ENUM', description: 'Set room active/away', constraints: ['true', 'false']]]
+        command 'setRoomSetpoint', [[name: 'value*', type: 'NUMBER', description: 'Per-room target temperature or signed offset'], [name: 'mode*', type: 'ENUM', description: 'Interpret value as an absolute target or a signed offset', constraints: ['absolute', 'offset']]]
     }
 
     preferences {
@@ -116,6 +125,7 @@ def uninstalled() {
 
 def initialize() {
   logDebug('initialize')
+  sendEvent(name: 'driverVersion', value: VERSION)
   refresh()
 }
 
@@ -153,6 +163,11 @@ def getDeviceState(String attr) {
 def setRoomActive(isActive) {
   logDebug("setRoomActive: ${isActive}")
   parent.patchRoom(device, isActive)
+}
+
+def setRoomSetpoint(value, mode) {
+  logDebug("setRoomSetpoint: ${value} (${mode})")
+  parent.patchRoomSetpoint(device, value, mode)
 }
 
 def updateParentPollingInterval(Integer intervalMinutes) {

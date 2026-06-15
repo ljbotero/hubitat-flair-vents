@@ -115,6 +115,42 @@ python tools/gen_parity_fixtures \
 - Clean up schedules/subscriptions/state in `uninstalled()`.
 - OAuth 2.0 tokens live in `state`, never logged; auto re-auth on 401/403.
 
+### On-hub compile killers (the app must SAVE in the editor) — hard-won
+
+The off-device Spock/`hubitat_ci` harness compiles fast and does **NOT** reproduce
+the on-hub sandbox compiler, so a green test suite does **not** guarantee the app
+will save on a real hub. Two constructs make Hubitat's sandbox AST transform blow
+up superlinearly — the editor/HPM save spins forever with **no error in the logs**
+(only a `performUpdates ran for NNNms` warning). Both were real outages in this app:
+
+1. **No `methodMissing` / `propertyMissing` / `invokeMethod` (any metaclass/MOP hook).**
+   Defining one forces the sandbox to route *every* dynamic call in the entire class
+   through it → pathological compile. A `cross-cutting-invariants-guard` test fails the
+   build if `methodMissing`/`propertyMissing` is reintroduced — keep it.
+   - If you need to dispatch a scheduled job whose name is dynamic (e.g. per-zone),
+     do **not** encode data in the handler name. Use a **single static handler** and
+     pass the data in the scheduler `data:` map:
+     `runIn(sec, 'myHandler', [overwrite:false, data:[zoneId: z]])` →
+     `void myHandler(Map data) { ... data.zoneId ... }`.
+2. **No deeply *nested* closures** (a closure that contains another closure, e.g.
+   `Closure<Double> f = { ... list.each { ... } }`). Each closure compiles to its own
+   class; nesting them is what detonates. Flat single-level closures (`list.each {}`)
+   are fine. Prefer plain `for` loops and **extract** any inner closure into a top-level
+   helper method — this is exactly why the pure library (typed `for` loops, no closures,
+   no MOP) compiles in ~5s while a closure/MOP-heavy app of similar size hangs.
+
+General rule: keep app methods closure-light and MOP-free; mirror the library's
+typed, `for`-loop, helper-method style for anything hot or large.
+
+**Diagnosing a save hang without the UI** (Hub Security off): drive the save endpoint
+and time it — `POST /app/save` with `id=` empty + `create=true` + `source=<code>`
+compiles and returns **302** on success, **200** (editor page) on a compile error, or
+hangs/times out on the pathological case. Read current source/version via
+`GET /app/ajax/code?id=<id>`. Binary-search by creating shells with the first K methods
+to bisect to the offending construct. (Hubitat exposes no app-code *delete* endpoint on
+2.5.x firmware — throwaway diagnostic apps must be removed from the Apps Code UI.)
+
+
 ### DAB v2 library purity rule
 
 `libraries/flair-vents-dabv2.groovy` (`FlairVentsDabv2`) is **pure**: no Hubitat

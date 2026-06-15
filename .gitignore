@@ -1,13 +1,8 @@
-.gradle
-.clinerules
-.code_cerebro
 build
 bin
 docs
 memory-bank
-.idea/
-.vscode/
-.hubitat/
+.*
 
 # Python bytecode from tools/ (parity fixture generator)
 __pycache__/

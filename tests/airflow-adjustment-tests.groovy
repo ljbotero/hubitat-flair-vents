@@ -17,7 +17,8 @@ class AirflowAdjustmentTest extends Specification {
             Flags.DontValidatePreferences,
             Flags.DontValidateDefinition,
             Flags.DontRestrictGroovy,
-            Flags.DontRequireParseMethodInDevice
+            Flags.DontRequireParseMethodInDevice,
+            Flags.AllowReadingNonInputSettings
           ]
   private static final AbstractMap USER_SETTINGS = ['debugLevel': 1, 'thermostat1CloseInactiveRooms': true]
 

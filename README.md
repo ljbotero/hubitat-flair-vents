@@ -51,6 +51,10 @@ Control and automation are at your fingertips. Each Flair vent appears as an ind
 - Set the **vent opening level** with `setLevel` (0 for closed, 100 for fully open).
 - Manage **room activity** using the `setRoomActive` command to strategically manage airflow based on room usage.
 
+### Manual mode and the local Puck dial
+
+While Dynamic Airflow Balancing is enabled, it holds your Flair structure in **Manual mode** so it can position vents directly. Manual mode disables Flair's own automation, which means **turning the dial on a Flair Puck no longer changes the room set point** — local Puck setpoint control is unavailable while DAB-managed Manual mode is held. The Flair API exposes no toggle to re-enable the local Puck dial in this state, so this is a documented limitation rather than a configurable option. Set the room set point from Hubitat instead (for example with the per-room target/offset settings or the `setRoomSetpoint` command).
+
 ## Development & Testing
 
 ### Running Tests
