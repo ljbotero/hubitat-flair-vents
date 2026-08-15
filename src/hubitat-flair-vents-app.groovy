@@ -33,7 +33,7 @@ import groovy.json.JsonOutput
 // a null/missing field can never render "vnullbeta" (R7.8) — it falls back to
 // VERSION_FALLBACK_LABEL instead.
 @Field static final String STABLE_VERSION = '0.235'
-@Field static final String BETA_VERSION = '0.236'
+@Field static final String BETA_VERSION = '0.237'
 // The channel this build ships on: the v0.236 bundle is the beta/early-release
 // artifact, so it derives its displayed version from BETA_VERSION.
 @Field static final String RELEASE_CHANNEL = 'beta'
@@ -46,7 +46,7 @@ import groovy.json.JsonOutput
 // build ships on the beta channel). The channel-aware, fallback-safe derivation
 // that guarantees no null-derived "vnullbeta" string is appDisplayVersion()
 // (R7.8); this literal stays equal to that derived value.
-@Field static final String APP_VERSION = '0.236'
+@Field static final String APP_VERSION = '0.237'
 
 // Base URL for Flair API endpoints.
 @Field static final String BASE_URL = 'https://api.flair.co'
@@ -365,7 +365,16 @@ preferences {
 // methods call section()/input()/paragraph() against the page builder exactly
 // like renderZoneConfigSections() already does.
 def mainPage() {
-  dynamicPage(name: 'mainPage', title: 'Setup', install: true, uninstall: true) {
+  // Issue #7 (GitHub): the OAuth section promises "the page will refresh
+  // automatically" while background authentication runs, but the page had no
+  // refreshInterval so it never did — users stared at a stale "Authenticating…"
+  // paragraph after auth had already succeeded. Auto-refresh only while an auth
+  // outcome is pending (credentials present, no token, no surfaced error yet).
+  boolean awaitingAuth = settings?.clientId && settings?.clientSecret &&
+    !state.flairAccessToken && !state.authError
+  Map pageOpts = [name: 'mainPage', title: 'Setup', install: true, uninstall: true]
+  if (awaitingAuth) { pageOpts.refreshInterval = 3 }
+  dynamicPage(pageOpts) {
     section {
       paragraph "<small><b>Hubitat Integration for Flair Smart Vents</b> — version ${APP_VERSION}</small>"
     }
@@ -4174,6 +4183,9 @@ def retryPatchDataAsyncWrapper(data) {
 }
 
 def noOpHandler(resp, data) {
+  // Issue #7: even a fire-and-forget PATCH holds a throttle slot — release it
+  // when the callback lands, or structure-mode patches slowly wedge the counter.
+  decrementActiveRequests()
   log 'noOpHandler called', 3
 }
 
@@ -4584,35 +4596,44 @@ def handleDeviceList(resp, data) {
   def ventCount = 0
   def puckCount = 0
   respJson.data.each { it ->
-    if (it?.type == 'vents' || it?.type == 'pucks') {
-      if (it.type == 'vents') {
-        ventCount++
-      } else if (it.type == 'pucks') {
-        puckCount++
+    // Issue #7 (GitHub): per-item isolation. One device whose payload or trait
+    // processing throws must not abort onboarding of the remaining devices in
+    // the payload (the puck handlers already isolate per item; this vent/puck
+    // path did not, so a single failing vent pinned discovery at exactly one
+    // onboarded vent no matter how often Discover was clicked).
+    try {
+      if (it?.type == 'vents' || it?.type == 'pucks') {
+        if (it.type == 'vents') {
+          ventCount++
+        } else if (it.type == 'pucks') {
+          puckCount++
+        }
+        // R1 blank-name fallback (design §R1.1, cross-ref R7.5/R7.32): mirror the
+        // ID-derived label fallback already used by handleAllPucks/handleRoomsWithPucks
+        // so a Puck 2 (or vent) shipped with a blank/default name is not dropped by
+        // makeRealDevice's null/blank-label guard.
+        def deviceId = it?.id?.toString()?.trim()
+        def label = it?.attributes?.name?.toString()?.trim()
+        if (!label) {
+          label = (it.type == 'pucks' ? "Puck-${deviceId}" : "Vent-${deviceId}")
+        }
+        def device = [
+          id   : it?.id,
+          type : it?.type,
+          label: label
+        ]
+        def dev = makeRealDevice(device)
+        if (dev && it.type == 'vents') {
+          processVentTraits(dev, [data: it])
+        }
+      } else {
+        // R1.22/R1.23: an unrecognized device `type` (or unexpected attribute
+        // shape) is logged at a diagnostic level and skipped per-device so
+        // discovery continues onboarding the recognized devices in the payload.
+        log "Skipping unrecognized device type '${it?.type}' (id=${it?.id})", 2
       }
-      // R1 blank-name fallback (design §R1.1, cross-ref R7.5/R7.32): mirror the
-      // ID-derived label fallback already used by handleAllPucks/handleRoomsWithPucks
-      // so a Puck 2 (or vent) shipped with a blank/default name is not dropped by
-      // makeRealDevice's null/blank-label guard.
-      def deviceId = it?.id?.toString()?.trim()
-      def label = it?.attributes?.name?.toString()?.trim()
-      if (!label) {
-        label = (it.type == 'pucks' ? "Puck-${deviceId}" : "Vent-${deviceId}")
-      }
-      def device = [
-        id   : it?.id,
-        type : it?.type,
-        label: label
-      ]
-      def dev = makeRealDevice(device)
-      if (dev && it.type == 'vents') {
-        processVentTraits(dev, [data: it])
-      }
-    } else {
-      // R1.22/R1.23: an unrecognized device `type` (or unexpected attribute
-      // shape) is logged at a diagnostic level and skipped per-device so
-      // discovery continues onboarding the recognized devices in the payload.
-      log "Skipping unrecognized device type '${it?.type}' (id=${it?.id})", 2
+    } catch (Exception e) {
+      logError "Error onboarding discovered device (id=${it?.id}, type=${it?.type}): ${e?.message}"
     }
   }
   log "Discovered ${ventCount} vents and ${puckCount} pucks", 3
@@ -4760,14 +4781,21 @@ def getDeviceReadingWithCache(device, deviceId, deviceType, callback) {
   getDataAsync(uri, callback + 'WithCache', [device: device, cacheKey: cacheKey])
 }
 
+// NOTE (issue #7): never registered as an async callback — retained for direct
+// (synthetic) invocation only, so it must NOT touch the throttle counter. The
+// registered callback (handleRoomGetWithCache) owns the slot release.
 def handleRoomGet(resp, data) {
-  decrementActiveRequests()  // Always decrement when response comes back
   if (!isValidResponse(resp) || !data?.device) { return }
   processRoomTraits(data.device, resp.getJson())
 }
 
 // Modified handleRoomGet to include caching
 def handleRoomGetWithCache(resp, data) {
+  // Issue #7: this is the REGISTERED async callback for room fetches — release
+  // the throttle slot exactly once, first thing, on every outcome. It never
+  // decremented before, so every room poll leaked a slot until the counter
+  // wedged at 8/8 and all API traffic (including discovery) starved.
+  decrementActiveRequests()
   def roomData = null
   def roomId = null
   
@@ -4905,14 +4933,19 @@ def cleanupPendingRequests() {
   }
 }
 
+// NOTE (issue #7): never registered as an async callback — invoked synthetically
+// (reading cache hits) with a fake resp map, so it must NOT touch the throttle
+// counter. The registered callback (handleDeviceGetWithCache) owns the slot release.
 def handleDeviceGet(resp, data) {
-  decrementActiveRequests()  // Always decrement when response comes back
   if (!isValidResponse(resp) || !data?.device) { return }
   processVentTraits(data.device, resp.getJson())
 }
 
 // Modified handleDeviceGet to include caching
 def handleDeviceGetWithCache(resp, data) {
+  // Issue #7: registered async callback — owns the slot release (exactly once,
+  // first thing, on every outcome). It never decremented before (leak).
+  decrementActiveRequests()
   def deviceData = null
   def cacheKey = data?.cacheKey
   
@@ -4946,8 +4979,11 @@ def handleDeviceGetWithCache(resp, data) {
   }
 }
 
+// NOTE (issue #7): never registered as an async callback — invoked synthetically
+// (device-data cache hits and handlePuckGetWithCache delegation) with a fake
+// resp map, so it must NOT touch the throttle counter. The registered callback
+// (handlePuckGetWithCache) owns the slot release.
 def handlePuckGet(resp, data) {
-  decrementActiveRequests()  // Always decrement when response comes back
   if (!isValidResponse(resp) || !data?.device) { return }
   def respJson = resp.getJson()
   if (respJson?.data) {
@@ -4968,8 +5004,7 @@ def handlePuckGet(resp, data) {
         // Map the puck-resource voltage onto the canonical voltage attribute
         // (R1.9), then derive battery from it (R1.10).
         sendEvent(data.device, [name: 'voltage', value: voltage, unit: 'V'])
-        def battery = ((voltage - 2.0) / 1.6) * 100  // Assuming 2.0V = 0%, 3.6V = 100%
-        battery = Math.max(0, Math.min(100, battery.round() as int))
+        def battery = deriveBatteryPercent(voltage)
         sendEvent(data.device, [name: 'battery', value: battery, unit: '%'])
       } catch (Exception e) {
         log "Error calculating battery for puck: ${e.message}", 2
@@ -5022,6 +5057,10 @@ private emitPuckDiagnostics(device, Map attrs) {
 
 // Modified handlePuckGet to include caching
 def handlePuckGetWithCache(resp, data) {
+  // Issue #7: registered async callback — owns the slot release (exactly once,
+  // first thing, on every outcome). The handlePuckGet delegate below no longer
+  // decrements, so the slot is not double-released.
+  decrementActiveRequests()
   def deviceData = null
   def cacheKey = data?.cacheKey
   
@@ -5047,8 +5086,11 @@ def handlePuckGetWithCache(resp, data) {
 }
 
 
+// NOTE (issue #7): never registered as an async callback — invoked synthetically
+// (reading cache hits and handlePuckReadingGetWithCache delegation) with a fake
+// resp map, so it must NOT touch the throttle counter. The registered callback
+// (handlePuckReadingGetWithCache) owns the slot release.
 def handlePuckReadingGet(resp, data) {
-  decrementActiveRequests()  // Always decrement when response comes back
   if (!isValidResponse(resp) || !data?.device) { return }
   def respJson = resp.getJson()
   if (respJson?.data) {
@@ -5068,8 +5110,7 @@ def handlePuckReadingGet(resp, data) {
         def voltage = reading.attributes['system-voltage']
         // Map system-voltage to voltage attribute for Rule Machine compatibility
         sendEvent(data.device, [name: 'voltage', value: voltage, unit: 'V'])
-        def battery = ((voltage - 2.0) / 1.6) * 100
-        battery = Math.max(0, Math.min(100, battery.round() as int))
+        def battery = deriveBatteryPercent(voltage as BigDecimal)
         sendEvent(data.device, [name: 'battery', value: battery, unit: '%'])
       } catch (Exception e) {
         log "Error calculating battery from reading: ${e.message}", 2
@@ -5084,6 +5125,10 @@ def handlePuckReadingGet(resp, data) {
 
 // Modified handlePuckReadingGet to include caching
 def handlePuckReadingGetWithCache(resp, data) {
+  // Issue #7: registered async callback — owns the slot release (exactly once,
+  // first thing, on every outcome). The handlePuckReadingGet delegate below no
+  // longer decrements, so the slot is not double-released.
+  decrementActiveRequests()
   def deviceData = null
   def cacheKey = data?.cacheKey
   
@@ -5146,8 +5191,7 @@ def processVentTraits(device, details) {
    def voltage = asFiniteNumber(rawVoltage)
    if (voltage != null) {
      sendEvent(device, [name: 'voltage', value: voltage, unit: 'V'])
-     def battery = ((voltage - 2.0) / 1.6) * 100  // 2.0V = 0%, 3.6V = 100%
-     battery = Math.max(0, Math.min(100, battery.round() as int))
+     def battery = deriveBatteryPercent(voltage)
      sendEvent(device, [name: 'battery', value: battery, unit: '%'])
      def ventId = device?.getId()
      if (ventId != null) {
@@ -5169,6 +5213,23 @@ private asFiniteNumber(value) {
     return value
   }
   return null
+}
+
+// Derives a battery percentage from a battery voltage using the established
+// (v - 2.0) / 1.6 * 100 map (2.0 V = 0%, 3.6 V = 100%), rounded to the nearest
+// integer and clamped to 0..100.
+//
+// Issue #7 (GitHub): this intentionally uses double math + Math.round instead of
+// calling `.round()` on the BigDecimal arithmetic result. The hub's Groovy
+// runtime lacks the round(BigDecimal) extension that the off-device test
+// harness has, so `battery.round()` resolved to the JDK's
+// BigDecimal.round(MathContext) with an implicit null argument and threw the
+// raw "java.lang.NullPointerException: null" (reported at line 5150, method
+// handleDeviceList) that aborted vent discovery. Math.round dispatches
+// identically on-hub and off-device.
+private int deriveBatteryPercent(Number voltage) {
+  long rounded = Math.round(((voltage.doubleValue() - 2.0d) / 1.6d) * 100.0d)
+  return (int) Math.max(0L, Math.min(100L, rounded))
 }
 
 def processRoomTraits(device, details) {
@@ -5358,10 +5419,12 @@ def getStructureData(int retryCount = 0) {
   def httpParams = [ uri: uri, headers: headers, contentType: CONTENT_TYPE, timeout: HTTP_TIMEOUT_SECS ]
   
   incrementActiveRequests()
+  boolean slotReleased = false
   
   try {
     httpGet(httpParams) { resp ->
       decrementActiveRequests()
+      slotReleased = true
       
       if (!resp.success) { 
         throw new Exception("HTTP request failed with status: ${resp.status}")
@@ -5391,7 +5454,9 @@ def getStructureData(int retryCount = 0) {
       app.updateSetting('structureId', selection.id)
     }
   } catch (Exception e) {
-    decrementActiveRequests()
+    // Issue #7: the closure may have already released the slot before throwing
+    // (e.g. a non-success HTTP status) — never release the same slot twice.
+    if (!slotReleased) { decrementActiveRequests() }
     
     if (retryCount < MAX_API_RETRY_ATTEMPTS) {
       log "Structure data request failed (attempt ${retryCount + 1}/${MAX_API_RETRY_ATTEMPTS}): ${e.message}", 2

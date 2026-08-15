@@ -2,6 +2,60 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.237] - 2026-08-15 (Beta / Early Release channel)
+
+> Bug-fix release for the 0.236 beta addressing
+> [GitHub issue #7](https://github.com/ljbotero/hubitat-flair-vents/issues/7)
+> ("New Beta Failing on Discovery"). Distributed as a single Hubitat **Bundle**
+> (`bundles/flair-vents.v0.237.zip`) on the HPM **Beta / Early Release** channel.
+
+### Fixed
+
+- **Vent discovery no longer aborts with `java.lang.NullPointerException: null on line
+  5150 (method handleDeviceList)`.** The 0.236 vent battery derivation called `.round()`
+  on a BigDecimal, which does not dispatch on the hub's Groovy runtime (it resolved to
+  the JDK's `BigDecimal.round(MathContext)` with an implicit null argument) — the first
+  vent in every discovery payload threw, aborting onboarding of all remaining vents and
+  pinning discovery at a single vent. Battery is now derived with hub-safe double math
+  (`deriveBatteryPercent`, same (v-2.0)/1.6*100 map, clamped 0..100), and
+  `handleDeviceList` isolates failures per device so one bad payload can never abort the
+  rest of the response. The same hub-safe derivation now also applies to both puck
+  battery paths, whose identical `.round()` failure was previously being silently
+  swallowed by their try/catch on-hub.
+- **The API throttle no longer wedges at 8/8 (`CRITICAL: Active request counter is
+  stuck at 8/8`).** The registered polling callbacks (`handleRoomGetWithCache`,
+  `handleDeviceGetWithCache`, `handlePuckGetWithCache`, `handlePuckReadingGetWithCache`)
+  and the fire-and-forget PATCH callback (`noOpHandler`) never released their
+  concurrency slots, so routine device polling leaked slots until the counter hit the
+  8-slot cap and every new request — including discovery's — burned its 5 retries
+  unsent (`getDataAsync failed after 5 retries for URI: .../api/pucks`) until the
+  5-minute watchdog reset the counter, and then wedged again. Slot accounting is now
+  exactly-once: every registered async callback releases its slot first-thing on every
+  outcome; the legacy handlers (`handleRoomGet`, `handleDeviceGet`, `handlePuckGet`,
+  `handlePuckReadingGet`), which are only ever invoked synthetically on cache hits and
+  WithCache delegation, no longer touch the counter (this also removes the spurious
+  cache-hit decrements that could mask real leaks); and the blocking structure fetch
+  can no longer double-release a slot when the request fails after its response closure
+  already ran.
+- **The Setup page now actually refreshes during authentication.** The OAuth section
+  promised "the page will refresh automatically" but `mainPage` had no
+  `refreshInterval`, so users stared at a stale "Authenticating…" paragraph after auth
+  had already succeeded. The page now auto-refreshes every 3 s while an auth outcome is
+  pending (credentials present, no token, no surfaced error) and stops once
+  authentication succeeds or fails.
+- **HPM "View Apps and Drivers" no longer shows `vnull`.** The bundle entry in
+  `packageManifest.json` now carries per-item `version`/`betaVersion` fields — HPM
+  renders the per-item value (falling back to the package value only when the item
+  resolves to null, which for a beta-flagged bundle produced the literal string
+  "null beta").
+
+### Added
+
+- Regression suite `tests/issue7-discovery-slot-release-tests.groovy` pinning per-item
+  discovery isolation, the hub-safe battery derivation (rounding + clamping), and the
+  exactly-once throttle-slot release invariants for every registered callback and every
+  synthetic invocation path.
+
 ## [0.236] - 2026-06-13 (Beta / Early Release channel)
 
 > Distributed as a single Hubitat **Bundle** (`bundles/flair-vents.v0.236.zip`) on the
