@@ -4,7 +4,7 @@ import groovy.json.JsonOutput
 
 /**
  *  Hubitat Flair Vents Integration
- *  Version 0.236
+ *  Version 0.238
  *
  *  Copyright 2024 Jaime Botero. All Rights Reserved
  *
@@ -33,8 +33,8 @@ import groovy.json.JsonOutput
 // a null/missing field can never render "vnullbeta" (R7.8) — it falls back to
 // VERSION_FALLBACK_LABEL instead.
 @Field static final String STABLE_VERSION = '0.235'
-@Field static final String BETA_VERSION = '0.237'
-// The channel this build ships on: the v0.236 bundle is the beta/early-release
+@Field static final String BETA_VERSION = '0.238'
+// The channel this build ships on: the v0.238 bundle is the beta/early-release
 // artifact, so it derives its displayed version from BETA_VERSION.
 @Field static final String RELEASE_CHANNEL = 'beta'
 // Documented default version label used only when a manifest field is
@@ -46,7 +46,7 @@ import groovy.json.JsonOutput
 // build ships on the beta channel). The channel-aware, fallback-safe derivation
 // that guarantees no null-derived "vnullbeta" string is appDisplayVersion()
 // (R7.8); this literal stays equal to that derived value.
-@Field static final String APP_VERSION = '0.237'
+@Field static final String APP_VERSION = '0.238'
 
 // Base URL for Flair API endpoints.
 @Field static final String BASE_URL = 'https://api.flair.co'
@@ -726,6 +726,12 @@ def initialize() {
   if (settings.thermostat1) {
     subscribe(settings.thermostat1, 'thermostatOperatingState', thermostat1ChangeStateHandler)
     subscribe(settings.thermostat1, 'temperature', thermostat1ChangeTemp)
+    // R6.2: a fan-mode flip (auto <-> on) while idle starts/stops circulation,
+    // which the operating-state subscription cannot see. Subscribing the fan
+    // mode lets the evaluate notice promptly instead of waiting for the next
+    // idle cadence tick; the handler gates on dabEnabled + circulationEnabled
+    // and debounces short bursts (R6.7/R6.8).
+    subscribe(settings.thermostat1, 'thermostatFanMode', thermostat1FanModeHandler)
     def temp = settings.thermostat1?.currentValue('temperature') ?: 0
     def coolingSetpoint = settings.thermostat1?.currentValue('coolingSetpoint') ?: 0
     def heatingSetpoint = settings.thermostat1?.currentValue('heatingSetpoint') ?: 0
@@ -1921,6 +1927,31 @@ boolean isDabV2BalancingAction(String action) {
   return action == HEATING || action == COOLING
 }
 
+// R6.2 fan-on-while-idle fallback. The circulation seam (`dabV2CirculationResult`)
+// only sees the resolved ACTION, so the fallback is translated HERE, where the
+// fan mode is still available: an `idle` operating state with the fan forced `on`
+// is handed downstream as the canonical `fan only` action (R6.1) so the
+// circulation path can engage. Every other combination passes the raw operating
+// state through unchanged. Delegates the detection itself to the pure library
+// (`dabv2DetectCirculation`) so R6.1/R6.2/R6.4 semantics live in exactly one
+// place. PURE on its inputs (no platform reads) so it is directly unit-testable.
+String resolveThermostatEvaluateAction(String operatingState, String fanMode) {
+  if (dabv2DetectCirculation(operatingState, fanMode)) { return 'fan only' }
+  return operatingState
+}
+
+// Resolve the effective DAB v2 evaluate action for a thermostat DEVICE: the raw
+// `thermostatOperatingState`, with the R6.2 fan-on-while-idle fallback folded in
+// via `resolveThermostatEvaluateAction`. Both attributes belong to Hubitat's
+// standard Thermostat capability, so `currentValue` simply returns null when a
+// device never reported one — which degrades to the raw operating state.
+String thermostatEvaluateAction(thermostat) {
+  if (thermostat == null) { return null }
+  String operatingState = thermostat.currentValue('thermostatOperatingState')
+  String fanMode = thermostat.currentValue('thermostatFanMode')
+  return resolveThermostatEvaluateAction(operatingState, fanMode)
+}
+
 // === DAB v2 adaptive evaluation cadence (Task 9.6; R22) ===
 //
 // Exactly ONE self-managed evaluate job per app. The job (`dabV2EvaluateTick`)
@@ -2026,7 +2057,9 @@ def runDabV2BalanceEvaluate() {
   def ventsByRoomId = atomicState?.ventsByRoomId
   if (!ventsByRoomId) { return }
   try {
-    def action = settings?.thermostat1?.currentValue('thermostatOperatingState')
+    // R6.2: resolved WITH the fan mode so an idle+fan-on state reaches the
+    // circulation path as the canonical 'fan only' action.
+    def action = thermostatEvaluateAction(settings?.thermostat1)
     String mode = resolveDabV2HvacAction(action)
     // Setpoint is always read in the active conditioning direction; idle/fan
     // zones still need it for the bounded pre-adjust trigger (R10.8).
@@ -2117,7 +2150,9 @@ private void evaluateDabV2ZoneById(String zoneId) {
   try {
     if (!zoneVentsByRoomId.isEmpty()) {
       def thermostat = (zone?.thermostat != null) ? zone.thermostat : settings?.thermostat1
-      def action = thermostat?.currentValue('thermostatOperatingState')
+      // R6.2: resolved WITH the fan mode so an idle+fan-on state reaches the
+      // circulation path as the canonical 'fan only' action.
+      def action = thermostatEvaluateAction(thermostat)
       String mode = resolveDabV2HvacAction(action)
       // Setpoint is read in the active conditioning direction (idle/fan zones
       // still need it for the bounded pre-adjust trigger).
@@ -2728,8 +2763,9 @@ private Map dabV2CirculationResult(action, List roomData, BigDecimal setpointC,
   if (!coerceBoolean(cfg?.circulationEnabled, false)) { return null }
   String operatingState = (action == null ? null : action.toString())
   // fanMode is not surfaced at this seam; the canonical fan-only operating state
-  // (R6.1) is sufficient. The fan-on+idle fallback (R6.2) is detected upstream
-  // where the fan mode is available and handed in as a 'fan only' action.
+  // (R6.1) is sufficient. The fan-on+idle fallback (R6.2) is detected upstream by
+  // `thermostatEvaluateAction` (both evaluate entry points), where the fan mode
+  // is available, and handed in as a 'fan only' action.
   if (!dabv2DetectCirculation(operatingState, null)) { return null }
 
   BigDecimal circPct = (cfg?.circulationOpenPct ?: CIRCULATION_OPEN_DEFAULT) as BigDecimal
@@ -4048,9 +4084,12 @@ def handleDataPathThrottle(resp, data) {
   Long retryAfterMs = retryAfterMsFromResponse(resp)
   if (data?.uri && data?.callback && retryCount < MAX_API_RETRY_ATTEMPTS) {
     def retryData = [uri: data.uri, callback: data.callback, retryCount: retryCount + 1]
-    if (data.containsKey('data')) { retryData.data = data.data }
+    // Sanitize before scheduling (forum #382): the scheduler JSON round-trip
+    // turns a live device into a LazyMap. overwrite:false so parallel 429
+    // retries don't clobber each other.
+    if (data.containsKey('data')) { retryData.data = sanitizeRetryData(data.data) }
     runInMillis(dabv2BackoffIntervalMs(retryCount, retryAfterMs), 'retryGetDataAsyncWrapper',
-                [data: retryData])
+                [overwrite: false, data: retryData])
     log "Data-path throttle (429): scheduled bounded retry of ${data.uri} " +
         "(attempt ${retryCount + 1}/${MAX_API_RETRY_ATTEMPTS})", 2
   } else if (data?.uri) {
@@ -4059,6 +4098,43 @@ def handleDataPathThrottle(resp, data) {
     log "Data-path throttle (429) for ${data?.deviceType}: no retry context; deferring to next cycle", 2
   }
   return true
+}
+
+// === Scheduler-safe retry data (forum #382; AGENTS "store IDs, never device objects") ===
+//
+// Hubitat serializes runIn/runInMillis `data:` maps to JSON and deserializes
+// them when the job fires, so a live ChildDeviceWrapper placed in scheduler data
+// comes back as a groovy.json.internal.LazyMap (its JSON dump is the
+// `[capabilities:[[attributes:[...]]]]` shape seen in user logs). A downstream
+// handler then calls sendEvent(LazyMap, ...) and throws MissingMethodException.
+// Every deferral/retry path must therefore strip the device to its network id
+// BEFORE scheduling (sanitize) and look it back up AFTER the round-trip
+// (rehydrate). All other keys (cacheKey etc.) pass through untouched.
+
+// Replace a live `device` entry with its `deviceId` so the map survives the
+// scheduler's JSON round-trip. Non-map / device-less payloads pass through.
+private sanitizeRetryData(data) {
+  if (!(data instanceof Map) || data.device == null) { return data }
+  Map copy = new LinkedHashMap((Map) data)
+  def device = copy.remove('device')
+  copy.deviceId = device.getDeviceNetworkId()
+  return copy
+}
+
+// Restore a sanitized `deviceId` entry to the live `device` child wrapper.
+// Returns null when the device no longer exists (caller drops the retry) —
+// a deleted child is the only way the lookup can fail.
+private rehydrateRetryData(data) {
+  if (!(data instanceof Map) || data.deviceId == null || data.device != null) { return data }
+  def device = getChildDevice(data.deviceId.toString())
+  if (device == null) {
+    logError "Retry dropped: device ${data.deviceId} no longer exists"
+    return null
+  }
+  Map copy = new LinkedHashMap((Map) data)
+  copy.remove('deviceId')
+  copy.device = device
+  return copy
 }
 
 // Updated getDataAsync to accept a String callback name with simple throttling.
@@ -4078,13 +4154,15 @@ def getDataAsync(String uri, String callback, data = null, int retryCount = 0) {
     }
   } else {
     if (retryCount < MAX_API_RETRY_ATTEMPTS) {
-      def retryData = [uri: uri, callback: callback, retryCount: retryCount + 1]
-      if (data?.device && uri.contains('/room')) {
-        retryData.data = [deviceId: data.device.getDeviceNetworkId()]
-      } else {
-        retryData.data = data
-      }
-      runInMillis(dabv2BackoffIntervalMs(retryCount, null), 'retryGetDataAsyncWrapper', [data: retryData])
+      // Sanitize EVERY deferral (not just /room): a live device object in
+      // scheduler data comes back as a LazyMap (forum #382). overwrite:false so
+      // concurrent deferrals from a poll burst don't clobber each other's retry
+      // job — the old default silently dropped all but the last deferred request,
+      // which is how a newly added Puck 2's discovery GET could vanish.
+      def retryData = [uri: uri, callback: callback, retryCount: retryCount + 1,
+                       data: sanitizeRetryData(data)]
+      runInMillis(dabv2BackoffIntervalMs(retryCount, null), 'retryGetDataAsyncWrapper',
+                  [overwrite: false, data: retryData])
     } else {
       logError "getDataAsync failed after ${MAX_API_RETRY_ATTEMPTS} retries for URI: ${uri}"
     }
@@ -4132,8 +4210,12 @@ def retryGetDataAsyncWrapper(data) {
     // Re-route through cache check
     getRoomDataWithCache(device, deviceId, isPuck)
   } else {
-    // Normal retry for non-room requests
-    getDataAsync(data.uri, data.callback, data.data, data.retryCount)
+    // Normal retry for non-room requests. Rehydrate a sanitized deviceId back
+    // into the live child wrapper (forum #382) so downstream handlers get a
+    // real device, never the scheduler's JSON round-trip of one.
+    def retryPayload = rehydrateRetryData(data.data)
+    if (data.data != null && retryPayload == null) { return }
+    getDataAsync(data.uri, data.callback, retryPayload, data.retryCount)
   }
 }
 
@@ -4164,8 +4246,12 @@ def patchDataAsync(String uri, String callback, body, data = null, int retryCoun
     }
   } else {
     if (retryCount < MAX_API_RETRY_ATTEMPTS) {
-      def retryData = [uri: uri, callback: callback, body: body, data: data, retryCount: retryCount + 1]
-      runInMillis(dabv2BackoffIntervalMs(retryCount, null), 'retryPatchDataAsyncWrapper', [data: retryData])
+      // Same scheduler-safety rules as getDataAsync (forum #382): sanitize the
+      // device out of the payload and never clobber a sibling retry job.
+      def retryData = [uri: uri, callback: callback, body: body,
+                       data: sanitizeRetryData(data), retryCount: retryCount + 1]
+      runInMillis(dabv2BackoffIntervalMs(retryCount, null), 'retryPatchDataAsyncWrapper',
+                  [overwrite: false, data: retryData])
     } else {
       logError "patchDataAsync failed after ${MAX_API_RETRY_ATTEMPTS} retries for URI: ${uri}"
     }
@@ -4178,8 +4264,10 @@ def retryPatchDataAsyncWrapper(data) {
     logError "retryPatchDataAsyncWrapper called with invalid data: ${data}"
     return
   }
-  
-  patchDataAsync(data.uri, data.callback, data.body, data.data, data.retryCount)
+  // Rehydrate a sanitized deviceId back into the live child wrapper (forum #382).
+  def retryPayload = rehydrateRetryData(data.data)
+  if (data.data != null && retryPayload == null) { return }
+  patchDataAsync(data.uri, data.callback, data.body, retryPayload, data.retryCount)
 }
 
 def noOpHandler(resp, data) {
@@ -4455,13 +4543,19 @@ def handleAllPucks(resp, data) {
 
 def handleRoomsWithPucks(resp, data) {
   decrementActiveRequests()  // Always decrement when response comes back
+  // Declared OUTSIDE the first try block: the room-relationships block below
+  // reads it too. It previously referenced a try-scoped local, which threw
+  // MissingPropertyException on every call and silently disabled the
+  // rooms->relationships->pucks discovery path (the catch only logged at debug
+  // level), costing one of the four puck discovery sources.
+  def respJson = null
   try {
     log "handleRoomsWithPucks called", 2
     if (!isValidResponse(resp)) { 
       log "handleRoomsWithPucks: Invalid response status: ${resp?.getStatus()}", 2
       return 
     }
-    def respJson = resp.getJson()
+    respJson = resp.getJson()
     
     // Log the structure to debug
     log "handleRoomsWithPucks response: has included=${respJson?.included != null}, included count=${respJson?.included?.size() ?: 0}, has data=${respJson?.data != null}, data count=${respJson?.data?.size() ?: 0}", 2
@@ -5729,6 +5823,28 @@ def isThermostatAboutToChangeState(String hvacMode, BigDecimal setpoint, BigDeci
   atomicState.tempDiffsInsideThreshold = true
   log "Pre-adjusting vents for upcoming HVAC start. [mode=${hvacMode}, setpoint=${setpoint}, temp=${temp}]", 3
   return true
+}
+
+// R6.2 fan-mode event handler. A fan-mode flip (auto <-> on) while the system is
+// idle starts/stops fan-only circulation, which the operating-state subscription
+// cannot observe. Gated on dabEnabled + circulationEnabled (a disabled feature
+// changes nothing downstream, so the evaluate would be a pointless API cost) and
+// routed through the `shouldApplyCirculationChange` debounce so short fan bursts
+// never thrash the vents (R6.7/R6.8): a suppressed flip is simply picked up by
+// the next cadence tick if it persists. The applied-change timestamp is stamped
+// ONLY when an evaluate actually runs, mirroring the gate's documented contract.
+def thermostat1FanModeHandler(evt) {
+  log "Thermostat fan mode changed to: ${evt.value}", 3
+  if (!settings?.dabEnabled || !getDabV2CirculationEnabled()) { return }
+  Long nowMs = now()
+  Long lastMs = atomicState?.dabV2LastCirculationChangeMs as Long
+  Long debounceMs = (getDabV2CirculationDebounceSec() as long) * 1000L
+  if (!shouldApplyCirculationChange(nowMs: nowMs, lastCirculationMs: lastMs, debounceMs: debounceMs)) {
+    log 'Circulation change suppressed by debounce (R6.7)', 3
+    return
+  }
+  atomicState.dabV2LastCirculationChangeMs = nowMs
+  selectAndRunDabV2Evaluate()
 }
 
 def thermostat1ChangeStateHandler(evt) {

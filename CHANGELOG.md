@@ -2,6 +2,59 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.238] - 2026-08-16 (Beta / Early Release channel)
+
+> Bug-fix release for the 0.237 beta addressing the Puck 2 discovery/reading failures
+> reported on the forum (posts #380/#382) and the fan-only circulation gap surfaced by
+> the "force vents open while idle" conflict (post #371). Distributed as a single
+> Hubitat **Bundle** (`bundles/flair-vents.v0.238.zip`) on the HPM **Beta / Early
+> Release** channel. The stable channel remains **0.235**.
+
+### Fixed
+
+- **Throttle-deferred API retries no longer crash sensor processing with
+  `MissingMethodException: sendEvent() ... (groovy.json.internal.LazyMap, LinkedHashMap)`
+  (bundle line 5102, `handlePuckReadingGetWithCache`).** Hubitat serializes scheduler
+  `data:` maps to JSON, so the live device wrapper the deferral path stashed for every
+  non-`/room` URI came back as a `LazyMap` and the puck reading handler dispatched
+  `sendEvent` against it. Every deferral/retry seam (`getDataAsync`, the 429 data-path
+  retry, `patchDataAsync`) now strips the device to its network id before scheduling
+  (`sanitizeRetryData`) and looks it back up when the job fires (`rehydrateRetryData`),
+  per the "store IDs, never device objects" rule. A retry whose child was deleted in
+  the meantime is dropped with a logged error instead of crashing downstream.
+- **Deferred retries no longer overwrite each other — the likely reason a newly added
+  Puck 2 was never discovered while existing devices kept working.** All deferred
+  requests shared one `retryGetDataAsyncWrapper` job with the scheduler's default
+  `overwrite: true`, so N deferrals in one poll burst collapsed to a single surviving
+  retry and the rest were silently dropped — discovery's own four GETs could clobber
+  each other at a saturated throttle. Retry scheduling now uses `overwrite: false` on
+  every deferral seam so each request keeps its own bounded retry.
+- **The rooms→relationships→pucks discovery path works again.** `handleRoomsWithPucks`
+  referenced a `respJson` local that was scoped to the first try block, so the room
+  relationships pass threw `MissingPropertyException` on every call and one of the four
+  puck discovery sources has been dead code since 0.236 (the catch logged it at debug
+  level only).
+- **Fan-only circulation now engages when the fan is forced on while the system is
+  idle (R6.2).** The evaluate entry points only read `thermostatOperatingState`, so the
+  library's fan-on+idle circulation detection was unreachable and "Open vents during
+  fan-only circulation" only worked for thermostats reporting a literal `fan only`
+  operating state. Both evaluate paths now resolve the action through
+  `thermostatEvaluateAction` (operating state + fan mode), and the app subscribes to
+  `thermostatFanMode` so a fan flip is noticed promptly — gated on DAB + circulation
+  being enabled and debounced via the existing `shouldApplyCirculationChange` window so
+  short fan bursts never thrash vents.
+
+### Added
+
+- **Settings Reference in the README** covering every Dynamic Airflow Balancing
+  setting (core, DAB v2 balancing behavior, fan-only circulation, optional inputs,
+  zones, diagnostics) with defaults and clamp ranges.
+- Regression suites `tests/scheduler-safe-retry-data-tests.groovy` (sanitize/rehydrate
+  round-trip, per-seam `overwrite: false`, deleted-child drop, repaired room-relationships
+  discovery) and `tests/circulation-fan-on-idle-fallback-tests.groovy` (action
+  resolution, device-level fallback, end-to-end circulation engagement, fan-mode
+  handler gates + debounce, subscription wiring pin).
+
 ## [0.237] - 2026-08-15 (Beta / Early Release channel)
 
 > Bug-fix release for the 0.236 beta addressing

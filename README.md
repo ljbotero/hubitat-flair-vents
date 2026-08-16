@@ -55,6 +55,49 @@ Control and automation are at your fingertips. Each Flair vent appears as an ind
 
 While Dynamic Airflow Balancing is enabled, it holds your Flair structure in **Manual mode** so it can position vents directly. Manual mode disables Flair's own automation, which means **turning the dial on a Flair Puck no longer changes the room set point** — local Puck setpoint control is unavailable while DAB-managed Manual mode is held. The Flair API exposes no toggle to re-enable the local Puck dial in this state, so this is a documented limitation rather than a configurable option. Set the room set point from Hubitat instead (for example with the per-room target/offset settings or the `setRoomSetpoint` command).
 
+## Settings Reference (Dynamic Airflow Balancing)
+
+All settings live in the Flair Vents app page once **Dynamic Airflow Balancing** is enabled. Defaults are sensible for most homes; out-of-range values are clamped to the documented bounds.
+
+### Core
+
+- **Choose Thermostat for Vents** — the controlling thermostat for the default zone. The app reads its *operating state* and *setpoint*; room temperatures come from each room's own Flair sensor (or a per-vent override, below).
+- **Control Strategy** — `balance` (DAB v2, default for new installs) or the legacy strategy (default for existing installs until you opt in).
+- **Airflow safety floor (%)** (default 40, range 20–90) — the combined-airflow minimum that protects the HVAC system. Inviolable: every other setting yields to it.
+- **Minimum vent opening (%)** (default 0) — every balanced vent is commanded to at least this percentage. The safety floor and the inactive-room close take precedence.
+- **Count of conventional Vents** (0–15) and **Conventional vent assumed open (%)** (default 100) — how many non-Flair vents share the system and how open they are assumed to be; both feed the combined-airflow math behind the safety floor.
+- **Close vents on inactive rooms** (default on) — vents in rooms marked inactive are closed (never below the safety floor).
+- **Vent Adjustment Granularity** (5/10/25/50/100%, default 5) — the grid vent targets are rounded to. Coarser = fewer, larger moves.
+
+### Balancing behavior (DAB v2)
+
+- **Spread guardrail (C)** (default 1.0) — if the predicted temperature spread across active rooms is already at or below this, the adjustment is skipped entirely. Bigger value = fewer vent moves, looser balance.
+- **Spread improvement deadband (C)** (default 0.3) — new vent targets are only applied when they are predicted to shrink the spread by at least this much; filters out moves that barely help.
+- **Enable duct cross-coupling** (default on) — when a room cannot keep up even with its vent nearly fully open, rooms that already reached their target close their vents to redirect air to it. Duct pressure/temperature readings veto the transfer when it would not help.
+- **Airflow-limited margin (%)** (default 5) and **Airflow-limited error threshold (C)** (default 0.5) — when a room's vent is within the margin of its maximum useful opening but the room is still off target by more than the threshold, the room is flagged *airflow-limited* (the trigger for cross-coupling).
+- **Active evaluation interval (min)** (default 3) and **Idle evaluation interval (min)** (default 10) — how often the balancing loop re-evaluates while the HVAC is conditioning vs. idle.
+- **Short-cycle idle gap (min)** (default 10) — a restart in the same mode after an idle gap shorter than this reuses the previous cycle's vent allocation instead of recomputing (avoids churn on short-cycling systems).
+- **Pre-adjust minimum idle dwell (min)** (default 5) — the system must have been idle at least this long before vents may be pre-positioned for the next expected cycle.
+- **Pre-adjust trigger threshold (C)** (default 1.0) — pre-positioning happens only once at least one room has drifted back within this many degrees of the setpoint (a new cycle looks imminent). Together the two gates keep vents from moving on short idle blips.
+
+### Fan-only circulation
+
+- **Open vents during fan-only circulation** (default off) — when the thermostat reports fan-only operation (its operating state is `fan only`, or the fan mode is `on` while the system is idle), the zone's vents open to the circulation percentage instead of being left at their idle positions.
+- **Circulation open percentage (%)** (10–100, default 50) — how far vents open while circulating.
+- **Circulation debounce (s)** (0–600, default 60) — suppresses short fan bursts so vents don't thrash on rapid fan on/off flips.
+
+### Optional inputs
+
+- **Outdoor temp source** — adds outdoor temperature to the learning context so room efficiency is judged against conditions.
+- **Whole-home door sensor / Occupancy source** — fallbacks used for rooms without their own signals.
+- **Per-room door sensors** — map a contact sensor to a room so an open door only slows that room's airflow estimate (unmapped rooms use the whole-home fallback). Occupancy is taken per room from the Flair puck automatically.
+- **Choose Thermostat for [vent]** (under Vent Options) — per-vent temperature-source override: use this device's reading as that vent's room temperature instead of the Flair sensor.
+
+### Zones and diagnostics
+
+- **Add a zone** — create one zone per HVAC system/thermostat. Each zone gets its own controlling thermostat, conventional-vent count, safety floor, and independent learning; each vent/puck belongs to at most one zone, and unassigned devices are left alone.
+- **Create diagnostic devices** (default off) — creates one child device per room plus a zone-summary device exposing what the algorithm is thinking (targets, learned rates, predicted spread). Purely informational; control is unaffected.
+
 ## Development & Testing
 
 ### Running Tests
