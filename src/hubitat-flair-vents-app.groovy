@@ -4,7 +4,7 @@ import groovy.json.JsonOutput
 
 /**
  *  Hubitat Flair Vents Integration
- *  Version 0.238
+ *  Version 0.239
  *
  *  Copyright 2024 Jaime Botero. All Rights Reserved
  *
@@ -33,8 +33,8 @@ import groovy.json.JsonOutput
 // a null/missing field can never render "vnullbeta" (R7.8) — it falls back to
 // VERSION_FALLBACK_LABEL instead.
 @Field static final String STABLE_VERSION = '0.235'
-@Field static final String BETA_VERSION = '0.238'
-// The channel this build ships on: the v0.238 bundle is the beta/early-release
+@Field static final String BETA_VERSION = '0.239'
+// The channel this build ships on: the v0.239 bundle is the beta/early-release
 // artifact, so it derives its displayed version from BETA_VERSION.
 @Field static final String RELEASE_CHANNEL = 'beta'
 // Documented default version label used only when a manifest field is
@@ -46,7 +46,7 @@ import groovy.json.JsonOutput
 // build ships on the beta channel). The channel-aware, fallback-safe derivation
 // that guarantees no null-derived "vnullbeta" string is appDisplayVersion()
 // (R7.8); this literal stays equal to that derived value.
-@Field static final String APP_VERSION = '0.238'
+@Field static final String APP_VERSION = '0.239'
 
 // Base URL for Flair API endpoints.
 @Field static final String BASE_URL = 'https://api.flair.co'
@@ -4461,15 +4461,16 @@ def autoReauthenticate() {
 private void discover() {
   log 'Discovery started', 3
   // L2 (Task 2.6, review-findings.md F-05, DC-5) - DEFERRED, not changed here.
-  // This fans out to four endpoints (vents, pucks, rooms?include=pucks, /api/pucks)
-  // and three different handlers each create pucks, with inconsistent puck naming
-  // ("Puck-${id}" here vs "${room} Puck" in the rooms handler). Consolidating the
-  // redundant fan-out and unifying puck naming touches the device-discovery/creation
-  // flow and is owned by the later app-wiring work (tasks 9.x); it is recorded as
-  // deferred future work (task 10.4) rather than repaired now because it is not
-  // safety-bearing (no airflow impact) and a piecemeal change here would risk
-  // regressing device identity. makeRealDevice is idempotent on network id, so the
-  // duplicate fan-out is currently harmless (re-discovers the same devices).
+  // This fans out to six endpoints (vents, pucks, puck2s, rooms?include=pucks,
+  // /api/pucks, /api/puck2s) and three different handlers each create pucks, with
+  // inconsistent puck naming ("Puck-${id}" here vs "${room} Puck" in the rooms
+  // handler). Consolidating the redundant fan-out and unifying puck naming touches
+  // the device-discovery/creation flow and is owned by the later app-wiring work
+  // (tasks 9.x); it is recorded as deferred future work (task 10.4) rather than
+  // repaired now because it is not safety-bearing (no airflow impact) and a
+  // piecemeal change here would risk regressing device identity. makeRealDevice is
+  // idempotent on network id, so the duplicate fan-out is currently harmless
+  // (re-discovers the same devices).
   atomicState.remove('ventsByRoomId')
   def structureId = getStructureId()
   // Discover vents first
@@ -4480,27 +4481,41 @@ private void discover() {
   def pucksUri = "${BASE_URL}/api/structures/${structureId}/pucks"
   log "Calling pucks endpoint: ${pucksUri}", 2
   getDataAsync(pucksUri, 'handleDeviceList', [deviceType: 'pucks'])
+  // Puck 2 devices are a SEPARATE JSON:API resource type (`puck2s`) and are
+  // never included in /pucks responses (official API docs, Pucks endpoint note;
+  // forum #387 room payload). Query them alongside v1 pucks - both revisions
+  // share the same 'Flair pucks' child driver.
+  def puck2sUri = "${BASE_URL}/api/structures/${structureId}/puck2s"
+  log "Calling puck2s endpoint: ${puck2sUri}", 2
+  getDataAsync(puck2sUri, 'handleDeviceList', [deviceType: 'puck2s'])
   // Also try to get pucks from rooms since they might be associated there
   def roomsUri = "${BASE_URL}/api/structures/${structureId}/rooms?include=pucks"
   log "Calling rooms endpoint for pucks: ${roomsUri}", 2
   getDataAsync(roomsUri, 'handleRoomsWithPucks')
-  // Try getting pucks directly without structure
+  // Try getting pucks directly without structure (both revisions)
   def allPucksUri = "${BASE_URL}/api/pucks"
   log "Calling all pucks endpoint: ${allPucksUri}", 2
   getDataAsync(allPucksUri, 'handleAllPucks')
+  def allPuck2sUri = "${BASE_URL}/api/puck2s"
+  log "Calling all puck2s endpoint: ${allPuck2sUri}", 2
+  getDataAsync(allPuck2sUri, 'handleAllPucks', [deviceType: 'puck2s'])
 }
 
 
 def handleAllPucks(resp, data) {
   decrementActiveRequests()  // Always decrement when response comes back
+  // Serves BOTH /api/pucks (v1, default) and /api/puck2s (Puck 2): the API
+  // resource type rides in on data.deviceType so the created child records the
+  // endpoint family its readings must be polled from.
+  String puckType = (data?.deviceType == 'puck2s') ? 'puck2s' : 'pucks'
   try {
-    log "handleAllPucks called", 2
+    log "handleAllPucks called for ${puckType}", 2
     if (!isValidResponse(resp)) {
       log "handleAllPucks: Invalid response status: ${resp?.getStatus()}", 2
       return
     }
     def respJson = resp?.getJson()
-    log "All pucks endpoint response: has data=${respJson?.data != null}, count=${respJson?.data?.size() ?: 0}", 2
+    log "All ${puckType} endpoint response: has data=${respJson?.data != null}, count=${respJson?.data?.size() ?: 0}", 2
 
     if (respJson?.data) {
       def puckCount = 0
@@ -4511,11 +4526,11 @@ def handleAllPucks(resp, data) {
             def puckId = puckData?.id?.toString()?.trim()
             def puckName = puckData?.attributes?.name?.toString()?.trim() ?: "Puck-${puckId}"
 
-            log "Creating puck from all pucks endpoint: ${puckName} (${puckId})", 2
+            log "Creating puck from all ${puckType} endpoint: ${puckName} (${puckId})", 2
 
             def device = [
               id   : puckId,
-              type : 'pucks',
+              type : puckType,
               label: puckName
             ]
 
@@ -4533,7 +4548,7 @@ def handleAllPucks(resp, data) {
       // previously buried under inconsistent indentation that made the brace
       // nesting hard to follow; the structure is now explicit and unambiguous.
       if (puckCount > 0) {
-        log "Discovered ${puckCount} pucks from all pucks endpoint", 3
+        log "Discovered ${puckCount} ${puckType} from all ${puckType} endpoint", 3
       }
     }
   } catch (Exception e) {
@@ -4560,12 +4575,13 @@ def handleRoomsWithPucks(resp, data) {
     // Log the structure to debug
     log "handleRoomsWithPucks response: has included=${respJson?.included != null}, included count=${respJson?.included?.size() ?: 0}, has data=${respJson?.data != null}, data count=${respJson?.data?.size() ?: 0}", 2
     
-    // Check if we have included pucks data
+    // Check if we have included pucks data (either revision: v1 `pucks` or
+    // Puck 2 `puck2s` - separate JSON:API resource types per the official docs)
     if (respJson?.included) {
       def puckCount = 0
       respJson.included.each { it ->
         try {
-          if (it?.type == 'pucks' && it?.id) {
+          if ((it?.type == 'pucks' || it?.type == 'puck2s') && it?.id) {
             puckCount++
             def puckId = it.id?.toString()?.trim()
             if (!puckId || puckId.isEmpty()) {
@@ -4585,11 +4601,11 @@ def handleRoomsWithPucks(resp, data) {
               return
             }
             
-            log "About to create puck device with id: ${puckId}, name: ${puckName}", 1
+            log "About to create puck device with id: ${puckId}, name: ${puckName}, type: ${it.type}", 1
             
             def device = [
               id   : puckId,
-              type : 'pucks',  // Use string literal to ensure it's not null
+              type : it.type?.toString(),
               label: puckName
             ]
             
@@ -4611,44 +4627,16 @@ def handleRoomsWithPucks(resp, data) {
   }
   
   
-  // Also check if pucks are in the room data relationships
+  // Also check if pucks are in the room data relationships. Rooms carry the
+  // two puck revisions in SEPARATE relationship lists (`pucks` for v1,
+  // `puck2s` for Puck 2 - see forum #387's payload), so both are walked.
   try {
     if (respJson?.data) {
-      def roomPuckCount = 0
-      respJson.data.each { room ->
-        if (room.relationships?.pucks?.data) {
-          room.relationships.pucks.data.each { puck ->
-            try {
-              roomPuckCount++
-              def puckId = puck.id?.toString()?.trim()
-              if (!puckId || puckId.isEmpty()) {
-                log "Skipping puck with invalid ID in room ${room.attributes?.name}", 2
-                return
-              }
-              
-              // Create a minimal puck device from the reference
-              def puckName = "Puck-${puckId}"
-              if (room.attributes?.name) {
-                puckName = "${room.attributes.name} Puck"
-              }
-              
-              log "Creating puck device from room reference: ${puckName} (${puckId})", 2
-              
-              def device = [
-                id   : puckId,
-                type : 'pucks',
-                label: puckName
-              ]
-              
-              def dev = makeRealDevice(device)
-              if (dev) {
-                log "Created puck device from room reference: ${puckName}", 2
-              }
-            } catch (Exception e) {
-              log "Error creating puck from room reference: ${e.message}", 1
-            }
-          }
-        }
+      int roomPuckCount = 0
+      for (Object roomObj : respJson.data) {
+        def room = roomObj
+        roomPuckCount += onboardRoomPuckRefs(room, room?.relationships?.pucks?.data, 'pucks')
+        roomPuckCount += onboardRoomPuckRefs(room, room?.relationships?.puck2s?.data, 'puck2s')
       }
       if (roomPuckCount > 0) {
         log "Found ${roomPuckCount} puck references in rooms", 3
@@ -4657,6 +4645,49 @@ def handleRoomsWithPucks(resp, data) {
   } catch (Exception e) {
     log "Error checking room puck relationships: ${e.message}", 1
   }
+}
+
+// Onboard the puck references of ONE room relationship list (`pucks` v1 or
+// `puck2s` Puck 2). Returns the number of references seen. Per-item isolation:
+// one bad reference never aborts the remaining ones. Extracted as a top-level
+// helper (plain for loop) so handleRoomsWithPucks stays closure-light per the
+// on-hub compile guidance.
+private int onboardRoomPuckRefs(room, List refs, String puckType) {
+  if (!refs) { return 0 }
+  int count = 0
+  for (Object refObj : refs) {
+    def puck = refObj
+    try {
+      count++
+      def puckId = puck?.id?.toString()?.trim()
+      if (!puckId || puckId.isEmpty()) {
+        log "Skipping ${puckType} reference with invalid ID in room ${room?.attributes?.name}", 2
+        continue
+      }
+
+      // Create a minimal puck device from the reference
+      def puckName = "Puck-${puckId}"
+      if (room?.attributes?.name) {
+        puckName = "${room.attributes.name} Puck"
+      }
+
+      log "Creating puck device from room reference: ${puckName} (${puckId}, ${puckType})", 2
+
+      def device = [
+        id   : puckId,
+        type : puckType,
+        label: puckName
+      ]
+
+      def dev = makeRealDevice(device)
+      if (dev) {
+        log "Created puck device from room reference: ${puckName}", 2
+      }
+    } catch (Exception e) {
+      log "Error creating puck from room reference: ${e.message}", 1
+    }
+  }
+  return count
 }
 
 
@@ -4696,10 +4727,12 @@ def handleDeviceList(resp, data) {
     // path did not, so a single failing vent pinned discovery at exactly one
     // onboarded vent no matter how often Discover was clicked).
     try {
-      if (it?.type == 'vents' || it?.type == 'pucks') {
+      // `puck2s` is the Puck 2 resource type - a SEPARATE JSON:API type from v1
+      // `pucks` (official API docs). Both onboard onto the same puck driver.
+      if (it?.type == 'vents' || it?.type == 'pucks' || it?.type == 'puck2s') {
         if (it.type == 'vents') {
           ventCount++
-        } else if (it.type == 'pucks') {
+        } else {
           puckCount++
         }
         // R1 blank-name fallback (design §R1.1, cross-ref R7.5/R7.32): mirror the
@@ -4709,7 +4742,7 @@ def handleDeviceList(resp, data) {
         def deviceId = it?.id?.toString()?.trim()
         def label = it?.attributes?.name?.toString()?.trim()
         if (!label) {
-          label = (it.type == 'pucks' ? "Puck-${deviceId}" : "Vent-${deviceId}")
+          label = (it.type == 'vents' ? "Vent-${deviceId}" : "Puck-${deviceId}")
         }
         def device = [
           id   : it?.id,
@@ -4754,6 +4787,8 @@ def makeRealDevice(Map device) {
   
   def newDevice = getChildDevice(deviceId)
   if (!newDevice) {
+    // Both puck revisions ('pucks' v1 and 'puck2s' Puck 2) share the same
+    // 'Flair pucks' child driver; only the API resource type differs.
     def deviceType = device.type == 'vents' ? 'Flair vents' : 'Flair pucks'
     try {
       newDevice = addChildDevice('bot.flair', deviceType, deviceId, [name: deviceLabel, label: deviceLabel])
@@ -4761,6 +4796,16 @@ def makeRealDevice(Map device) {
       logError "Failed to add child device: ${e.message}"
       return null
     }
+  }
+  // Persist the Flair API resource type on the child so polling routes to the
+  // right endpoint family (/api/pucks/... vs /api/puck2s/...). Idempotent, and
+  // it self-heals a device first seen through a source that reported the other
+  // type. Devices created before this change carry no value and default to the
+  // v1 'pucks' paths, so existing installs are unchanged.
+  try {
+    newDevice.updateDataValue('apiType', device.type?.toString())
+  } catch (Exception e) {
+    log "Could not record apiType for ${deviceId}: ${e.message}", 2
   }
   return newDevice
 }
@@ -4774,9 +4819,13 @@ def getDeviceData(device) {
   def isPuck = !device.hasAttribute('percent-open')
   
   if (isPuck) {
+    // Route to the device's own API resource family: v1 pucks poll
+    // /api/pucks/..., Puck 2 polls /api/puck2s/... (separate JSON:API types).
+    // Pucks created before apiType was recorded default to the v1 paths.
+    String puckType = puckApiType(device)
     // Get puck data and current reading with caching
-    getDeviceDataWithCache(device, deviceId, 'pucks', 'handlePuckGet')
-    getDeviceReadingWithCache(device, deviceId, 'pucks', 'handlePuckReadingGet')
+    getDeviceDataWithCache(device, deviceId, puckType, 'handlePuckGet')
+    getDeviceReadingWithCache(device, deviceId, puckType, 'handlePuckReadingGet')
     // Check cache before making room API call
     getRoomDataWithCache(device, deviceId, isPuck)
   } else {
@@ -4785,6 +4834,14 @@ def getDeviceData(device) {
     // Check cache before making room API call
     getRoomDataWithCache(device, deviceId, isPuck)
   }
+}
+
+// The Flair API resource family a puck child belongs to: 'puck2s' when the
+// device was discovered through a Puck 2 endpoint/reference, else the v1
+// 'pucks' (including every device created before apiType was recorded, so
+// existing installs keep their exact pre-change paths).
+private String puckApiType(device) {
+  return device?.getDataValue('apiType') == 'puck2s' ? 'puck2s' : 'pucks'
 }
 
 // New function to handle room data with caching
@@ -4810,8 +4867,10 @@ def getRoomDataWithCache(device, deviceId, isPuck) {
     markRequestPending(roomId)
   }
   
-  // No valid cache and no pending request, make the API call
-  def endpoint = isPuck ? "pucks" : "vents"
+  // No valid cache and no pending request, make the API call. A puck's room
+  // link lives under its own resource family (/api/pucks/{id}/room vs
+  // /api/puck2s/{id}/room per the Puck2 relationships in the official docs).
+  def endpoint = isPuck ? puckApiType(device) : 'vents'
   getDataAsync("${BASE_URL}/api/${endpoint}/${deviceId}/room", 'handleRoomGetWithCache', [device: device])
 }
 
@@ -4870,8 +4929,10 @@ def getDeviceReadingWithCache(device, deviceId, deviceType, callback) {
   // Mark this device as having a pending request
   markDeviceRequestPending(cacheKey)
   
-  // No valid cache and no pending request, make the API call
-  def uri = deviceType == 'pucks' ? "${BASE_URL}/api/pucks/${deviceId}/current-reading" : "${BASE_URL}/api/vents/${deviceId}/current-reading"
+  // No valid cache and no pending request, make the API call. Every resource
+  // family exposes the same shape: /api/<type>/<id>/current-reading (vents,
+  // pucks, and puck2s alike per the official docs).
+  def uri = "${BASE_URL}/api/${deviceType}/${deviceId}/current-reading"
   getDataAsync(uri, callback + 'WithCache', [device: device, cacheKey: cacheKey])
 }
 
@@ -5092,7 +5153,11 @@ def handlePuckGet(resp, data) {
     if (puckData?.attributes?.'current-humidity' != null) {
       sendEvent(data.device, [name: 'humidity', value: puckData.attributes['current-humidity'], unit: '%'])
     }
-    if (puckData?.attributes?.voltage != null) {
+    // A USB-powered Puck 2 reports voltage 0.0 (power-source 'USB' per the
+    // official docs) - deriving battery from it would surface a misleading 0%.
+    // Battery-powered devices of either revision keep the existing derivation.
+    boolean usbPowered = puckData?.attributes?.'power-source' == 'USB'
+    if (puckData?.attributes?.voltage != null && !usbPowered) {
       try {
         def voltage = puckData.attributes.voltage as BigDecimal
         // Map the puck-resource voltage onto the canonical voltage attribute
@@ -5124,13 +5189,23 @@ def handlePuckGet(resp, data) {
 // revision is classified (never gated) for optional diagnostics only (R1.3).
 private emitPuckDiagnostics(device, Map attrs) {
   if (!device || attrs == null) { return }
-  // RSSI: map current-rssi onto the canonical rssi attribute (R1.7).
+  // RSSI: map onto the canonical rssi attribute (R1.7). v1 reports
+  // current-rssi; Puck 2 readings report sub-ghz-rssi (or wifi-rssi when on
+  // WiFi) per the official puck2-sensor-readings docs.
   if (attrs['current-rssi'] != null) {
     sendEvent(device, [name: 'rssi', value: attrs['current-rssi'], unit: 'dBm'])
+  } else if (attrs['sub-ghz-rssi'] != null) {
+    sendEvent(device, [name: 'rssi', value: attrs['sub-ghz-rssi'], unit: 'dBm'])
+  } else if (attrs['wifi-rssi'] != null) {
+    sendEvent(device, [name: 'rssi', value: attrs['wifi-rssi'], unit: 'dBm'])
   }
-  // Firmware: surface firmware-version-s where present (R1.8).
+  // Firmware: surface firmware-version-s where present (R1.8). Puck 2 reports
+  // a NUMERIC firmware-version instead; surface it on the same canonical
+  // attribute so both revisions read alike in Hubitat.
   if (attrs['firmware-version-s'] != null) {
     sendEvent(device, [name: 'firmware-version-s', value: attrs['firmware-version-s']])
+  } else if (attrs['firmware-version'] != null) {
+    sendEvent(device, [name: 'firmware-version-s', value: attrs['firmware-version'].toString()])
   }
   // Motion/occupancy where exposed (R1.6): map the boolean occupancy flag onto
   // the MotionSensor motion attribute.

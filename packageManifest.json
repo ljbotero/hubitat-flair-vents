@@ -2,22 +2,22 @@
   "packageName": "Flair Vents",
   "author": "Jaime Botero",
   "version": "0.235",
-  "betaVersion": "0.238",
+  "betaVersion": "0.239",
   "dateReleased": "2026-08-16",
   "minimumHEVersion": "0.0.1",
   "documentationLink": "https://github.com/ljbotero/hubitat-flair-vents/blob/main/README.md",
   "communityLink": "https://community.hubitat.com/t/new-control-flair-vents-with-hubitat-free-open-source-app-and-driver/132728",
   "releaseNotes": "0.235 (stable): Flair Vents integration with the established Dynamic Airflow Balancing strategy and the latest reviewed fixes. Delivered as a single Hubitat Bundle (app + Flair vents driver).",
-  "betaReleaseNotes": "0.238 (beta): Fixes throttle-deferred API retries crashing puck sensor processing (MissingMethodException: sendEvent ... LazyMap in handlePuckReadingGetWithCache) by keeping device objects out of scheduler data, and stops deferred retries from overwriting each other - previously all but the last deferred request in a poll burst were silently dropped, which could keep a newly added Puck 2 from ever being discovered. Repairs the rooms-relationships puck discovery path (dead code since 0.236). Fan-only circulation now also engages when the fan is forced on while the system is idle (new thermostatFanMode subscription with debounce). Adds a Settings Reference to the README. Retains the full DAB v2 'balance' feature set; existing installs keep the legacy DAB strategy by default.",
+  "betaReleaseNotes": "0.239 (beta): Adds Flair Puck 2 support. The Flair API exposes Puck 2 as a separate resource type (puck2s) that never appears in the v1 /api/pucks responses, so discovery now queries both families (structures/{id}/puck2s and /api/puck2s, plus puck2s room relationships), onboards Puck 2 onto the existing puck driver, and polls each puck from its own endpoint family. Puck 2 readings map onto the same canonical attributes (sub-ghz/wifi RSSI -> rssi, numeric firmware-version -> firmware-version-s), and USB-powered Puck 2s no longer derive a misleading 0% battery. v1 pucks are unchanged, including devices created by earlier versions. Also includes the 0.238 fixes: scheduler-safe API retries, independent deferred retries, repaired rooms-relationships discovery, and fan-on-while-idle circulation.",
   "bundles": [
     {
       "id": "ea8e04e7-4f58-4ac7-950a-dfafb59cd734",
       "name": "Flair Vents",
       "namespace": "bot.flair",
       "version": "0.235",
-      "betaVersion": "0.238",
+      "betaVersion": "0.239",
       "location": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/bundles/flair-vents.v0.235.zip",
-      "betaLocation": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/bundles/flair-vents.v0.238.zip",
+      "betaLocation": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/bundles/flair-vents.v0.239.zip",
       "required": true
     }
   ]

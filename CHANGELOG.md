@@ -2,6 +2,47 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.239] - 2026-08-16 (Beta / Early Release channel)
+
+> Adds real Flair Puck 2 support, closing the remaining half of forum #380/#387: after
+> 0.238 repaired the transport, HomeAlone's debug log showed rooms carrying a populated
+> `puck2s` relationship next to an EMPTY v1 `pucks` list. The official Flair API docs
+> confirm it (Pucks endpoint note): Puck 2 is a separate JSON:API resource type served
+> by its own `/api/puck2s` endpoints and never included in `/api/pucks` responses — so
+> no amount of transport fixing could ever have discovered one. Distributed as
+> `bundles/flair-vents.v0.239.zip` on the HPM **Beta / Early Release** channel; the
+> stable channel remains **0.235**.
+
+### Added
+
+- **Puck 2 discovery via its own resource family.** `discover()` now also queries
+  `GET /api/structures/{sid}/puck2s` and `GET /api/puck2s`, `handleDeviceList` and
+  `handleAllPucks` accept `puck2s` items, and `handleRoomsWithPucks` walks BOTH room
+  relationship lists (`pucks` v1 and `puck2s`) as well as `puck2s` entries in the
+  included block. Both revisions onboard onto the existing `Flair pucks` driver.
+- **Per-device endpoint-family routing.** `makeRealDevice` records the API resource
+  type on the child (`apiType` data value, idempotent and self-healing); polling then
+  routes to `/api/puck2s/{id}`, `/api/puck2s/{id}/current-reading`, and
+  `/api/puck2s/{id}/room` for Puck 2 children. Children created before this change
+  carry no `apiType` and keep the exact v1 `/api/pucks/...` paths — v1 behavior is
+  unchanged.
+- **Puck 2 attribute mapping onto the same canonical driver attributes**
+  (per the official `puck2-sensor-readings` docs): `sub-ghz-rssi` / `wifi-rssi` map to
+  `rssi` (v1's `current-rssi` still wins when present), and Puck 2's numeric
+  `firmware-version` surfaces as `firmware-version-s`. Temperature/humidity keys are
+  shared with v1 and already mapped.
+- Regression suite `tests/puck2-resource-type-support-tests.groovy` pinning the dual
+  fan-out, apiType recording across every discovery source (including the exact #387
+  room payload shape), per-family polling routes, the docs-example reading mapping, and
+  the v1 regressions.
+
+### Fixed
+
+- **USB-powered Puck 2s no longer report a misleading 0% battery.** The Puck 2
+  resource reports `voltage: 0.0` with `power-source: "USB"`; the battery derivation is
+  now skipped for USB-powered devices (battery-powered pucks of either revision keep
+  the existing derivation).
+
 ## [0.238] - 2026-08-16 (Beta / Early Release channel)
 
 > Bug-fix release for the 0.237 beta addressing the Puck 2 discovery/reading failures
