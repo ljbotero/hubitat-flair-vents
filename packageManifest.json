@@ -2,22 +2,22 @@
   "packageName": "Flair Vents",
   "author": "Jaime Botero",
   "version": "0.235",
-  "betaVersion": "0.239",
-  "dateReleased": "2026-08-16",
+  "betaVersion": "0.240",
+  "dateReleased": "2026-08-21",
   "minimumHEVersion": "0.0.1",
   "documentationLink": "https://github.com/ljbotero/hubitat-flair-vents/blob/main/README.md",
   "communityLink": "https://community.hubitat.com/t/new-control-flair-vents-with-hubitat-free-open-source-app-and-driver/132728",
   "releaseNotes": "0.235 (stable): Flair Vents integration with the established Dynamic Airflow Balancing strategy and the latest reviewed fixes. Delivered as a single Hubitat Bundle (app + Flair vents driver).",
-  "betaReleaseNotes": "0.239 (beta): Adds Flair Puck 2 support. The Flair API exposes Puck 2 as a separate resource type (puck2s) that never appears in the v1 /api/pucks responses, so discovery now queries both families (structures/{id}/puck2s and /api/puck2s, plus puck2s room relationships), onboards Puck 2 onto the existing puck driver, and polls each puck from its own endpoint family. Puck 2 readings map onto the same canonical attributes (sub-ghz/wifi RSSI -> rssi, numeric firmware-version -> firmware-version-s), and USB-powered Puck 2s no longer derive a misleading 0% battery. v1 pucks are unchanged, including devices created by earlier versions. Also includes the 0.238 fixes: scheduler-safe API retries, independent deferred retries, repaired rooms-relationships discovery, and fan-on-while-idle circulation.",
+  "betaReleaseNotes": "0.240 (beta): Makes the opt-in DAB v2 diagnostic devices real. The 'Create diagnostic devices' toggle never produced devices because the publish step was not wired into the evaluate loops and the two driver types were missing from the bundle. The bundle now ships the Flair Vents Room Diagnostics and Flair Vents Zone Summary drivers, and every DAB v2 balance evaluation creates/refreshes one device per room plus a zone summary (about every 3 minutes while heating/cooling, every 10 minutes while idle). Multi-zone installs now recur through the zoned evaluate (own thermostat and model per zone), per-zone publishes coexist, and turning the surface off removes the devices. Applies to the balance control strategy only; the setup page now says so. Includes the 0.239 Puck 2 support and the 0.238 retry/circulation fixes.",
   "bundles": [
     {
       "id": "ea8e04e7-4f58-4ac7-950a-dfafb59cd734",
       "name": "Flair Vents",
       "namespace": "bot.flair",
       "version": "0.235",
-      "betaVersion": "0.239",
+      "betaVersion": "0.240",
       "location": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/bundles/flair-vents.v0.235.zip",
-      "betaLocation": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/bundles/flair-vents.v0.239.zip",
+      "betaLocation": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/bundles/flair-vents.v0.240.zip",
       "required": true
     }
   ]

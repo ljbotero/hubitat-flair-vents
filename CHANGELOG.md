@@ -2,6 +2,60 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.240] - 2026-08-21 (Beta / Early Release channel)
+
+> Makes the opt-in DAB v2 diagnostic devices real (forum #392). The "Create diagnostic
+> devices" toggle shipped in 0.236 with a fully implemented and unit-tested publish
+> surface that was never reachable in production. Distributed as
+> `bundles/flair-vents.v0.240.zip` on the HPM **Beta / Early Release** channel; the
+> stable channel remains **0.235**.
+
+### Fixed
+
+- **"Create diagnostic devices" now actually creates devices.** Two independent gaps:
+  `publishDabV2Diagnostics` was never called from any evaluate path (dead code), and
+  the two driver types the app instantiates existed only as name constants — no driver
+  source shipped in `src/` or the bundle, so every `addChildDevice` would have failed
+  (silently, at debug level) even once wired. Both evaluate paths (the flat
+  single-zone `runDabV2BalanceEvaluate` and the zoned `evaluateDabV2ZoneById`) now
+  publish the diagnostics after dispatch, and the bundle ships the new
+  `Flair Vents Room Diagnostics` and `Flair Vents Zone Summary` drivers. Devices are
+  created on the first `balance` evaluation after enabling and refresh on every
+  evaluation; in multi-zone installs the per-room devices coexist and the single
+  summary device reflects the most recently evaluated zone.
+- **The setup page now states the diagnostics scope.** The toggle only applies to the
+  DAB v2 `balance` control strategy (legacy DAB publishes nothing); the in-app note
+  and the README settings reference now say so, including the refresh cadence.
+
+- **Multi-zone installs recur through the zoned evaluate.** The recurring cadence tick
+  previously always took the flat evaluator (global thermostat1 + flat model) while the
+  per-zone `runIn` jobs were one-shot lifecycle kicks, so zoned installs were re-evaluated
+  (and would have published diagnostics) against thermostat 1's data. The tick now routes
+  through the zoned/chunked path whenever explicit zones exist; a default-only install
+  keeps the flat path and its model storage unchanged.
+- **Per-zone publishes coexist.** Device pruning now reconciles against the authoritative
+  whole-topology room set (`ventsByRoomId`) instead of each publish's room set, so
+  evaluating zone B no longer deletes zone A's devices, and a room with a transiently
+  unreadable temperature is no longer treated as a topology removal. The app-page mirror
+  merges rooms across zone publishes the same way.
+- **Turning the surface off cleans up.** Disabling the toggle, disabling DAB, or moving
+  off the `balance` strategy now removes the diagnostic children and mirrored state on
+  the next settings save instead of leaving them stale until uninstall.
+- **Honest attribute semantics.** The per-room open percentage is published as
+  `proposedOpenPct` (the evaluation's plan; dispatch may still suppress the physical
+  move through anti-chatter/batching gates), rooms surface their `active` flag, the
+  summary's `maxErrorC` excludes inactive rooms, and the strategy-comparison fields are
+  wired to the learning store's metrics (absent until the store populates them).
+
+### Added
+
+- Regression suite `tests/dabv2-diagnostics-wiring-tests.groovy` pinning the wiring in
+  both evaluate paths, the zoned-vs-flat tick routing, the disable/strategy-change
+  cleanup, the existence and exact definition names of both driver sources, full
+  attribute coverage (every key the app can emit is declared by its driver), and the
+  bundle packaging of both drivers. The observability suite additionally pins
+  multi-zone/transient-room prune behavior and the inactive-room summary filter.
+
 ## [0.239] - 2026-08-16 (Beta / Early Release channel)
 
 > Adds real Flair Puck 2 support, closing the remaining half of forum #380/#387: after

@@ -96,7 +96,7 @@ All settings live in the Flair Vents app page once **Dynamic Airflow Balancing**
 ### Zones and diagnostics
 
 - **Add a zone** — create one zone per HVAC system/thermostat. Each zone gets its own controlling thermostat, conventional-vent count, safety floor, and independent learning; each vent/puck belongs to at most one zone, and unassigned devices are left alone.
-- **Create diagnostic devices** (default off) — creates one child device per room plus a zone-summary device exposing what the algorithm is thinking (targets, learned rates, predicted spread). Purely informational; control is unaffected.
+- **Create diagnostic devices** (default off) — creates one child device per room plus a zone-summary device exposing what the algorithm is thinking (proposed vent openings, learned rates, predicted spread). DAB v2 `balance` strategy only: devices appear on the first balance evaluation after enabling and refresh on every evaluation (about every 3 minutes while heating/cooling, every 10 while idle); turning the option off removes them. Values are the evaluation's proposals — the dispatch layer may still suppress a physical move through its anti-chatter gates. Purely informational; control is unaffected.
 
 ## Development & Testing
 

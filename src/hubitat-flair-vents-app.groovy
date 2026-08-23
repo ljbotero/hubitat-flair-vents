@@ -4,7 +4,7 @@ import groovy.json.JsonOutput
 
 /**
  *  Hubitat Flair Vents Integration
- *  Version 0.239
+ *  Version 0.240
  *
  *  Copyright 2024 Jaime Botero. All Rights Reserved
  *
@@ -33,8 +33,8 @@ import groovy.json.JsonOutput
 // a null/missing field can never render "vnullbeta" (R7.8) — it falls back to
 // VERSION_FALLBACK_LABEL instead.
 @Field static final String STABLE_VERSION = '0.235'
-@Field static final String BETA_VERSION = '0.239'
-// The channel this build ships on: the v0.239 bundle is the beta/early-release
+@Field static final String BETA_VERSION = '0.240'
+// The channel this build ships on: the v0.240 bundle is the beta/early-release
 // artifact, so it derives its displayed version from BETA_VERSION.
 @Field static final String RELEASE_CHANNEL = 'beta'
 // Documented default version label used only when a manifest field is
@@ -46,7 +46,7 @@ import groovy.json.JsonOutput
 // build ships on the beta channel). The channel-aware, fallback-safe derivation
 // that guarantees no null-derived "vnullbeta" string is appDisplayVersion()
 // (R7.8); this literal stays equal to that derived value.
-@Field static final String APP_VERSION = '0.239'
+@Field static final String APP_VERSION = '0.240'
 
 // Base URL for Flair API endpoints.
 @Field static final String BASE_URL = 'https://api.flair.co'
@@ -513,6 +513,9 @@ private renderDabBalancingOptions() {
 
   input name: 'dabV2DiagnosticsEnabled', type: 'bool',
         title: 'Create diagnostic devices (per-room + zone summary)', defaultValue: false
+  paragraph '<small>Applies to the DAB v2 "balance" control strategy only. Devices are created on ' +
+            'the first balance evaluation after enabling and refresh on every evaluation (about every ' +
+            '3 minutes while heating/cooling, every 10 minutes while idle, with your intervals above).</small>'
   if (settings.thermostat1AdditionalStandardVents < 0) {
     app.updateSetting('thermostat1AdditionalStandardVents', 0)
   } else if (settings.thermostat1AdditionalStandardVents > MAX_STANDARD_VENTS) {
@@ -764,6 +767,12 @@ def initialize() {
   // setup for the instance's own zones only — and the zone-scoped teardown
   // (removeZone / reassignDeviceToZone) can cancel exactly that zone's job.
   scheduleDabV2ZoneEvaluations()
+
+  // R14.6 transition cleanup: reconcile the opt-in diagnostics surface with the
+  // saved settings — turning the toggle off (or leaving the balance strategy)
+  // removes the diagnostic children and mirrored state instead of leaving them
+  // stale until uninstall.
+  dabV2CleanupDiagnosticsIfDisabled()
 }
 
 // ------------------------------
@@ -2037,10 +2046,29 @@ def selectAndRunDabV2Evaluate() {
   String strategy = getDabV2ControlStrategy()
   if (atomicState != null) { atomicState.dabV2EvaluateStrategy = strategy }
   if (strategy == STRATEGY_BALANCE) {
-    runDabV2BalanceEvaluate()
+    // Multi-zone routing (review on 51912e9): the recurring cadence tick is the
+    // only self re-arming evaluate driver (the per-zone runIn jobs are one-shot
+    // lifecycle kicks), so when explicit zones exist it must take the
+    // zoned/chunked path — each zone with its OWN thermostat and model slice.
+    // The flat path (global thermostat1 + flat model) remains for the
+    // single-implicit-default-zone install so its model storage is unchanged.
+    if (dabV2HasExplicitZones()) {
+      runDabV2ZonedEvaluate()
+    } else {
+      runDabV2BalanceEvaluate()
+    }
   } else {
     evaluateRebalancingVents()
   }
+}
+
+// True when the install has explicitly configured zones: more than one zone id,
+// or any zone other than the implicit post-migration 'default'. Such installs
+// must evaluate per zone; a bare/default-only install keeps the flat path.
+private boolean dabV2HasExplicitZones() {
+  Map zones = (state?.zones instanceof Map) ? (Map) state.zones : [:]
+  if (zones.isEmpty()) { return false }
+  return zones.size() > 1 || !zones.containsKey('default')
 }
 
 // Production `balance`-strategy evaluate (Task 10.1; R5.6). Gathers the
@@ -2080,6 +2108,10 @@ def runDabV2BalanceEvaluate() {
             idleSinceMs: zoneResult.idleSinceMs, predictedSpreadC: zoneResult.predictedSpreadC]
       }
       dispatchDabV2Targets(zoneResult, roomData)
+      // R13/R14 (forum #392): publish the opt-in diagnostic surfaces for this
+      // evaluation. No-op unless 'Create diagnostic devices' is enabled; guarded
+      // internally so a diagnostics failure can never break balancing.
+      publishDabV2Diagnostics(zoneResult, roomData, loadDabV2Model(), setpointC)
       return zoneResult
     }
   } catch (err) {
@@ -2176,6 +2208,10 @@ private void evaluateDabV2ZoneById(String zoneId) {
           zones[zoneId] = zone
           state.zones = zones
           dispatchDabV2Targets(zoneResult, roomData)
+          // R13/R14 (forum #392): publish the opt-in diagnostics from this
+          // zone's OWN model. Per-room devices are room-keyed so zones coexist;
+          // the single summary device reflects the most recently evaluated zone.
+          publishDabV2Diagnostics(zoneResult, roomData, model, setpointC)
         }
       }
     }
@@ -3220,7 +3256,7 @@ boolean dabV2DiagnosticsEnabled() {
 }
 
 // Build the per-room diagnostic attribute maps. Each room carries ONLY its own
-// values — temperature, signed error-to-setpoint, commanded vent open %,
+// values — activity, temperature, signed error-to-setpoint, proposed vent open %,
 // airflow-limited indicator, learned cooling/heating efficiency, and that room's
 // vent leak + knee — so rooms read vertically without cross-room cramming
 // (R14.6, R13.3, R9.7, R11.12). The signed error is taken in the conditioning
@@ -3238,6 +3274,9 @@ Map gatherDabV2RoomDiagnostics(Map zoneResult, List roomData, model, BigDecimal 
     if (rd == null || rd.roomId == null) { return }
     String roomId = rd.roomId as String
     Map attrs = [:]
+    // Room activity is surfaced per room and used by the summary to keep
+    // inactive outliers out of the zone-wide max error (review on 51912e9).
+    attrs.active = coerceBoolean(rd.active, false)
     if (isDabV2UsableNumber(rd.tempC)) {
       BigDecimal t = (rd.tempC as BigDecimal)
       attrs.temperature = roundBigDecimal(t, 2)
@@ -3246,8 +3285,12 @@ Map gatherDabV2RoomDiagnostics(Map zoneResult, List roomData, model, BigDecimal 
         attrs.signedErrorC = roundBigDecimal(signed, 2)
       }
     }
+    // The PROPOSED aperture from this evaluation. Deliberately not named
+    // "commanded": the dispatch layer downstream may suppress the actual move
+    // (anti-chatter cooldown, batching, stale-cycle and idempotency gates), so
+    // this is the evaluation's plan, not a confirmation the vent moved.
     if (targets.containsKey(roomId)) {
-      attrs.commandedOpenPct = roundBigDecimal((targets[roomId] as BigDecimal), 1)
+      attrs.proposedOpenPct = roundBigDecimal((targets[roomId] as BigDecimal), 1)
     }
     attrs.airflowLimited = limited.contains(roomId)
     dabV2AppendRoomLearned(attrs, roomId, rd, model, heating)
@@ -3316,12 +3359,14 @@ Map gatherDabV2SystemSummary(Map zoneResult, Map roomDiag, Map counters, Map met
   return out
 }
 
-// Max active-room |signed error| across the per-room diagnostics (R14.1).
+// Max ACTIVE-room |signed error| across the per-room diagnostics (R14.1).
+// Inactive rooms are excluded so a deliberately unconditioned outlier (closed
+// guest room, open-window room) cannot dominate the zone summary.
 private BigDecimal dabV2MaxAbsError(Map roomDiag) {
   if (!roomDiag) { return 0 }
   BigDecimal worst = 0
   roomDiag.each { rid, attrs ->
-    if (attrs?.signedErrorC != null) {
+    if (attrs?.signedErrorC != null && coerceBoolean(attrs.active, true)) {
       BigDecimal e = (attrs.signedErrorC as BigDecimal).abs()
       if (e > worst) { worst = e }
     }
@@ -3330,8 +3375,10 @@ private BigDecimal dabV2MaxAbsError(Map roomDiag) {
 }
 
 // Map an evaluation result to the hold/recalculating/idle status enum (R14.1):
-// idle when not balancing; recalculating when a move was made (a floor-required
-// open or a fresh cycle anchor); otherwise hold.
+// idle when not balancing; recalculating when the EVALUATION produced a new plan
+// (a floor-required open or a fresh cycle anchor); otherwise hold. This is the
+// evaluation's status, not an actuation receipt — the dispatch layer may still
+// suppress the physical move (cooldown/batching/idempotency gates).
 private String dabV2DiagnosticStatus(Map zoneResult) {
   if (!coerceBoolean(zoneResult?.balancing, false)) { return 'idle' }
   Set fr = (zoneResult?.floorRequiredRooms in Set) ? (Set) zoneResult.floorRequiredRooms : ([] as Set)
@@ -3348,8 +3395,21 @@ private String dabV2DiagnosticStatus(Map zoneResult) {
 void publishDabV2Diagnostics(Map zoneResult, List roomData, model, BigDecimal setpointC,
     Map metrics = null, Long nowMs = null) {
   if (!dabV2DiagnosticsEnabled()) { return }
+  // Strategy-comparison metrics come from the learning store (model.metrics)
+  // unless the caller supplies an explicit override; an empty store simply
+  // omits the comparison fields (review on 51912e9).
+  Map effectiveMetrics = metrics
+  if (effectiveMetrics == null && model?.metrics in Map && !((Map) model.metrics).isEmpty()) {
+    effectiveMetrics = (Map) model.metrics
+  }
   Map roomDiag = gatherDabV2RoomDiagnostics(zoneResult, roomData, model, setpointC)
-  dabV2SyncRoomDiagnosticDevices(roomDiag.keySet())
+  // Create devices for THIS publish; prune ONLY against the authoritative
+  // whole-topology room set. A zoned install publishes one zone at a time, so
+  // pruning against the publish set would delete every other zone's devices,
+  // and a room with a transiently unreadable temperature would be treated as a
+  // topology removal (review findings on 51912e9).
+  dabV2EnsureRoomDiagnosticDevices(roomDiag.keySet())
+  dabV2PruneStaleRoomDiagnosticDevices(dabV2AllManagedRoomIds())
   roomDiag.each { roomId, attrs ->
     def dev = getChildDevice(DABV2_DIAG_ROOM_DNI_PREFIX + roomId)
     if (dev == null) { return }
@@ -3359,35 +3419,90 @@ void publishDabV2Diagnostics(Map zoneResult, List roomData, model, BigDecimal se
   String status = dabV2DiagnosticStatus(zoneResult)
   dabV2RecordObservation(status, (nowMs != null ? nowMs : now()) as Long)
   def summaryDev = dabV2EnsureSummaryDevice()
-  Map sum = gatherDabV2SystemSummary(zoneResult, roomDiag, dabV2Counters(), metrics)
+  Map sum = gatherDabV2SystemSummary(zoneResult, roomDiag, dabV2Counters(), effectiveMetrics)
   if (summaryDev != null) {
     sum.each { name, value -> safeSendEvent(summaryDev, [name: name, value: value]) }
   }
   // Mirror the same values into `state` so the app status page can render them
   // even where a dashboard / child device is not used (design R13/R14 surface 1).
+  // Rooms are MERGED across publishes (zones publish one at a time) and filtered
+  // to the authoritative topology so departed rooms drop out of the mirror too.
   if (state != null) {
-    state.dabV2Diagnostics = [summary: sum, rooms: roomDiag, updatedMs: (nowMs != null ? nowMs : now())]
+    state.dabV2Diagnostics = [summary: sum, rooms: dabV2MergedRoomsMirror(roomDiag),
+                              updatedMs: (nowMs != null ? nowMs : now())]
   }
 }
 
-// Create per-room diagnostic devices for the managed rooms and delete any stale
-// ones whose room has left the topology (R14.6). Idempotent: an existing device
-// is reused.
-private void dabV2SyncRoomDiagnosticDevices(Set roomIds) {
-  Set wanted = (roomIds ?: ([] as Set)).collect { DABV2_DIAG_ROOM_DNI_PREFIX + it } as Set
-  // Remove stale per-room devices.
+// The authoritative set of managed room ids across ALL zones, from the
+// discovered topology (`atomicState.ventsByRoomId`). Returns null when the
+// topology is unknown (pre-discovery) so callers skip pruning rather than
+// treating "unknown" as "empty".
+private Set dabV2AllManagedRoomIds() {
+  def byRoom = atomicState?.ventsByRoomId
+  if (!(byRoom instanceof Map) || ((Map) byRoom).isEmpty()) { return null }
+  return ((Map) byRoom).keySet().collect { it?.toString() } as Set
+}
+
+// Create any missing per-room diagnostic devices for THIS publish (create-only;
+// idempotent, an existing device is reused).
+private void dabV2EnsureRoomDiagnosticDevices(Set roomIds) {
+  (roomIds ?: ([] as Set)).each { roomId ->
+    String dni = DABV2_DIAG_ROOM_DNI_PREFIX + roomId
+    if (getChildDevice(dni) == null) {
+      dabV2SafeAddChildDevice(DABV2_DIAG_ROOM_DRIVER, dni, "DAB Diagnostics ${roomId}".toString())
+    }
+  }
+}
+
+// Delete per-room diagnostic devices whose room has ACTUALLY left the topology
+// (R14.6). `authoritativeRoomIds` is the whole-topology room set; null means the
+// topology is unknown, in which case nothing is pruned.
+private void dabV2PruneStaleRoomDiagnosticDevices(Set authoritativeRoomIds) {
+  if (authoritativeRoomIds == null) { return }
+  Set wanted = authoritativeRoomIds.collect { DABV2_DIAG_ROOM_DNI_PREFIX + it } as Set
   getChildDevices().each { dev ->
     String dni = dev?.getDeviceNetworkId()
     if (dni != null && dni.startsWith(DABV2_DIAG_ROOM_DNI_PREFIX) && !wanted.contains(dni)) {
       dabV2SafeDeleteChildDevice(dni)
     }
   }
-  // Create any missing per-room devices.
-  roomIds.each { roomId ->
-    String dni = DABV2_DIAG_ROOM_DNI_PREFIX + roomId
-    if (getChildDevice(dni) == null) {
-      dabV2SafeAddChildDevice(DABV2_DIAG_ROOM_DRIVER, dni, "DAB Diagnostics ${roomId}".toString())
+}
+
+// Merge this publish's per-room diagnostics over the previously mirrored rooms
+// (zones publish one at a time), dropping rooms that left the topology.
+private Map dabV2MergedRoomsMirror(Map roomDiag) {
+  Map prior = (state?.dabV2Diagnostics in Map && ((Map) state.dabV2Diagnostics).rooms in Map) ?
+      new LinkedHashMap((Map) ((Map) state.dabV2Diagnostics).rooms) : [:]
+  prior.putAll(roomDiag ?: [:])
+  Set authoritative = dabV2AllManagedRoomIds()
+  if (authoritative != null) {
+    prior.keySet().retainAll(authoritative)
+  }
+  return prior
+}
+
+// Transition cleanup (R14.6; review on 51912e9): when the diagnostics surface
+// is no longer active — the toggle turned off, DAB disabled, or the control
+// strategy moved off `balance` (legacy publishes nothing) — remove every
+// diagnostic child device and the mirrored state so nothing stale stays
+// visible. Runs from initialize() so every settings save reconciles; a no-op
+// while the surface is active or when nothing exists to remove.
+private void dabV2CleanupDiagnosticsIfDisabled() {
+  boolean active = dabV2DiagnosticsEnabled() &&
+      coerceBoolean(settings?.dabEnabled, false) &&
+      getDabV2ControlStrategy() == STRATEGY_BALANCE
+  if (active) { return }
+  int removed = 0
+  getChildDevices().each { dev ->
+    String dni = dev?.getDeviceNetworkId()
+    if (dni != null && (dni.startsWith(DABV2_DIAG_ROOM_DNI_PREFIX) || dni == DABV2_DIAG_SUMMARY_DNI)) {
+      dabV2SafeDeleteChildDevice(dni)
+      removed++
     }
+  }
+  if (state != null) { state.remove('dabV2Diagnostics') }
+  if (removed > 0) {
+    log "DAB v2 diagnostics inactive: removed ${removed} diagnostic child device(s)", 2
   }
 }
 

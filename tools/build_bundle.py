@@ -128,10 +128,12 @@ def _assert_minify_safe(original, minified):
 
 # Map: bundle archive name -> (manifest kind, source path relative to repo root)
 ENTRIES = [
-    ("bot.flair.FlairVentsDabv2.groovy", "library", "libraries/flair-vents-dabv2.groovy"),
-    ("bot.flair.Flairvents.groovy",      "driver",  "src/hubitat-flair-vents-driver.groovy"),
-    ("bot.flair.Flairpucks.groovy",      "driver",  "src/hubitat-flair-vents-pucks-driver.groovy"),
-    ("bot.flair.FlairVents.groovy",      "app",     "src/hubitat-flair-vents-app.groovy"),
+    ("bot.flair.FlairVentsDabv2.groovy",           "library", "libraries/flair-vents-dabv2.groovy"),
+    ("bot.flair.Flairvents.groovy",                "driver",  "src/hubitat-flair-vents-driver.groovy"),
+    ("bot.flair.Flairpucks.groovy",                "driver",  "src/hubitat-flair-vents-pucks-driver.groovy"),
+    ("bot.flair.FlairVentsRoomDiagnostics.groovy", "driver",  "src/hubitat-flair-vents-room-diagnostics-driver.groovy"),
+    ("bot.flair.FlairVentsZoneSummary.groovy",     "driver",  "src/hubitat-flair-vents-zone-summary-driver.groovy"),
+    ("bot.flair.FlairVents.groovy",                "app",     "src/hubitat-flair-vents-app.groovy"),
 ]
 
 NAMESPACE = "bot.flair"

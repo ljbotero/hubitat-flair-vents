@@ -172,8 +172,9 @@ class Dabv2ObservabilityTest extends Specification {
     (living.temperature as BigDecimal) == 25.0
     // cooling: signed error-to-setpoint = temp - setpoint = 25 - 22 = +3 (needs cooling)
     (living.signedErrorC as BigDecimal) == 3.0
-    (living.commandedOpenPct as BigDecimal) == 80.0
+    (living.proposedOpenPct as BigDecimal) == 80.0
     living.airflowLimited == true
+    living.active == true
     Math.abs((living.coolingEfficiency as double) - 0.0173d) <= 1e-6d
     Math.abs((living.heatingEfficiency as double) - 0.0211d) <= 1e-6d
     Math.abs((living.ventLeak as double) - 0.12d) <= 1e-6d
@@ -215,7 +216,24 @@ class Dabv2ObservabilityTest extends Specification {
     !sum.containsKey('living')
     !sum.containsKey('office')
     !sum.containsKey('temperature')
-    !sum.containsKey('commandedOpenPct')
+    !sum.containsKey('proposedOpenPct')
+  }
+
+  def "an inactive room's error is excluded from the summary max error"() {
+    setup: 'the biggest outlier room is INACTIVE (deliberately unconditioned)'
+    def script = buildScript()
+    def model = learnedModel()
+    List rooms = [
+      [roomId: 'living', tempC: 25.0, active: true, coolingRate: 0.1, ventIds: ['v-living']],
+      [roomId: 'office', tempC: 30.0, active: false, coolingRate: 0.1, ventIds: ['v-office']]
+    ]
+    Map diag = script.gatherDabV2RoomDiagnostics(zoneResult(), rooms, model, 22.0)
+
+    when:
+    Map sum = script.gatherDabV2SystemSummary(zoneResult(), diag, [:], null)
+
+    then: 'living (+3) drives the max error, not the inactive office (+8)'
+    (sum.maxErrorC as BigDecimal) == 3.0
   }
 
   // ---------------------------------------------------------------------------
@@ -240,10 +258,10 @@ class Dabv2ObservabilityTest extends Specification {
     eventNames(ROOM_PREFIX + 'living').contains('temperature')
     eventNames(ROOM_PREFIX + 'living').contains('signedErrorC')
     eventNames(ROOM_PREFIX + 'living').contains('airflowLimited')
-    (eventValue(ROOM_PREFIX + 'living', 'commandedOpenPct') as BigDecimal) == 80.0
+    (eventValue(ROOM_PREFIX + 'living', 'proposedOpenPct') as BigDecimal) == 80.0
 
-    and: 'the office device received a DIFFERENT (its own) commanded open %'
-    (eventValue(ROOM_PREFIX + 'office', 'commandedOpenPct') as BigDecimal) == 0.0
+    and: 'the office device received a DIFFERENT (its own) proposed open %'
+    (eventValue(ROOM_PREFIX + 'office', 'proposedOpenPct') as BigDecimal) == 0.0
 
     and: 'the summary device carries spread/status but no per-room temperature'
     eventNames(SUMMARY_DNI).contains('spreadC')
@@ -259,11 +277,15 @@ class Dabv2ObservabilityTest extends Specification {
     setup:
     def script = buildScript()
     def model = learnedModel()
+    // The AUTHORITATIVE topology (discovered rooms across all zones): pruning
+    // keys off this, never off a single publish's room set.
+    script.atomicState.ventsByRoomId = [living: ['v-living'], office: ['v-office']]
     // First publish over two rooms creates both per-room devices.
     script.publishDabV2Diagnostics(zoneResult(), roomData(), model, 22.0)
     assert devices.containsKey(ROOM_PREFIX + 'office')
 
-    when: 'the office room is dropped from the topology and we publish again'
+    when: 'the office room ACTUALLY leaves the topology and we publish again'
+    script.atomicState.ventsByRoomId = [living: ['v-living']]
     Map shrunk = zoneResult()
     shrunk.targets = ['living': 80.0d]
     List oneRoom = [[roomId: 'living', tempC: 25.0, active: true, coolingRate: 0.1, ventIds: ['v-living']]]
@@ -273,6 +295,25 @@ class Dabv2ObservabilityTest extends Specification {
     !devices.containsKey(ROOM_PREFIX + 'office')
     devices.containsKey(ROOM_PREFIX + 'living')
     devices.containsKey(SUMMARY_DNI)
+  }
+
+  def "a room missing from ONE publish is NOT pruned while it remains in the topology"() {
+    setup: 'both rooms exist in the authoritative topology'
+    def script = buildScript()
+    def model = learnedModel()
+    script.atomicState.ventsByRoomId = [living: ['v-living'], office: ['v-office']]
+    script.publishDabV2Diagnostics(zoneResult(), roomData(), model, 22.0)
+    assert devices.containsKey(ROOM_PREFIX + 'office')
+
+    when: 'office has a transiently unreadable temperature (or belongs to another zone) and is absent from this publish'
+    Map shrunk = zoneResult()
+    shrunk.targets = ['living': 80.0d]
+    List oneRoom = [[roomId: 'living', tempC: 25.0, active: true, coolingRate: 0.1, ventIds: ['v-living']]]
+    script.publishDabV2Diagnostics(shrunk, oneRoom, model, 22.0)
+
+    then: "office's device survives; only a real topology change prunes it"
+    devices.containsKey(ROOM_PREFIX + 'office')
+    devices.containsKey(ROOM_PREFIX + 'living')
   }
 
   // ---------------------------------------------------------------------------
