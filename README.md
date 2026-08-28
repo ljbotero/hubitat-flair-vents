@@ -88,7 +88,7 @@ All settings live in the Flair Vents app page once **Dynamic Airflow Balancing**
 
 ### Optional inputs
 
-- **Outdoor temp source** — adds outdoor temperature to the learning context so room efficiency is judged against conditions.
+- **Outdoor temp source** — reserved for regime-aware learning (classifying conditions into cold/mild/hot bands so per-room efficiency can be learned per regime). The banding plumbing ships today but the balancing loop does not consume it yet, so this input currently has no effect on control.
 - **Whole-home door sensor / Occupancy source** — fallbacks used for rooms without their own signals.
 - **Per-room door sensors** — map a contact sensor to a room so an open door only slows that room's airflow estimate (unmapped rooms use the whole-home fallback). Occupancy is taken per room from the Flair puck automatically.
 - **Choose Thermostat for [vent]** (under Vent Options) — per-vent temperature-source override: use this device's reading as that vent's room temperature instead of the Flair sensor.

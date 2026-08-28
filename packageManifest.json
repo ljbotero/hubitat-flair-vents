@@ -2,22 +2,22 @@
   "packageName": "Flair Vents",
   "author": "Jaime Botero",
   "version": "0.235",
-  "betaVersion": "0.240",
-  "dateReleased": "2026-08-21",
+  "betaVersion": "0.241",
+  "dateReleased": "2026-08-27",
   "minimumHEVersion": "0.0.1",
   "documentationLink": "https://github.com/ljbotero/hubitat-flair-vents/blob/main/README.md",
   "communityLink": "https://community.hubitat.com/t/new-control-flair-vents-with-hubitat-free-open-source-app-and-driver/132728",
   "releaseNotes": "0.235 (stable): Flair Vents integration with the established Dynamic Airflow Balancing strategy and the latest reviewed fixes. Delivered as a single Hubitat Bundle (app + Flair vents driver).",
-  "betaReleaseNotes": "0.240 (beta): Makes the opt-in DAB v2 diagnostic devices real. The 'Create diagnostic devices' toggle never produced devices because the publish step was not wired into the evaluate loops and the two driver types were missing from the bundle. The bundle now ships the Flair Vents Room Diagnostics and Flair Vents Zone Summary drivers, and every DAB v2 balance evaluation creates/refreshes one device per room plus a zone summary (about every 3 minutes while heating/cooling, every 10 minutes while idle). Multi-zone installs now recur through the zoned evaluate (own thermostat and model per zone), per-zone publishes coexist, and turning the surface off removes the devices. Applies to the balance control strategy only; the setup page now says so. Includes the 0.239 Puck 2 support and the 0.238 retry/circulation fixes.",
+  "betaReleaseNotes": "0.241 (beta): Tolerates empty-body Flair PATCH responses. During cloud hiccups a vent or room PATCH can return 2xx with no JSON body, which crashed handleVentPatch (IllegalArgumentException: No json exists for response) and skipped the local state update for the commanded position. Both PATCH handlers now degrade gracefully, apply the commanded target locally, and let the next poll reconcile. Also documents that the outdoor temp source is reserved for regime-aware learning and has no control effect yet. Includes the 0.240 diagnostics, 0.239 Puck 2, and 0.238 retry/circulation work.",
   "bundles": [
     {
       "id": "ea8e04e7-4f58-4ac7-950a-dfafb59cd734",
       "name": "Flair Vents",
       "namespace": "bot.flair",
       "version": "0.235",
-      "betaVersion": "0.240",
+      "betaVersion": "0.241",
       "location": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/bundles/flair-vents.v0.235.zip",
-      "betaLocation": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/bundles/flair-vents.v0.240.zip",
+      "betaLocation": "https://raw.githubusercontent.com/ljbotero/hubitat-flair-vents/main/bundles/flair-vents.v0.241.zip",
       "required": true
     }
   ]

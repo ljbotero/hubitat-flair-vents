@@ -4,7 +4,7 @@ import groovy.json.JsonOutput
 
 /**
  *  Hubitat Flair Vents Integration
- *  Version 0.240
+ *  Version 0.241
  *
  *  Copyright 2024 Jaime Botero. All Rights Reserved
  *
@@ -33,8 +33,8 @@ import groovy.json.JsonOutput
 // a null/missing field can never render "vnullbeta" (R7.8) — it falls back to
 // VERSION_FALLBACK_LABEL instead.
 @Field static final String STABLE_VERSION = '0.235'
-@Field static final String BETA_VERSION = '0.240'
-// The channel this build ships on: the v0.240 bundle is the beta/early-release
+@Field static final String BETA_VERSION = '0.241'
+// The channel this build ships on: the v0.241 bundle is the beta/early-release
 // artifact, so it derives its displayed version from BETA_VERSION.
 @Field static final String RELEASE_CHANNEL = 'beta'
 // Documented default version label used only when a manifest field is
@@ -46,7 +46,7 @@ import groovy.json.JsonOutput
 // build ships on the beta channel). The channel-aware, fallback-safe derivation
 // that guarantees no null-derived "vnullbeta" string is appDisplayVersion()
 // (R7.8); this literal stays equal to that derived value.
-@Field static final String APP_VERSION = '0.240'
+@Field static final String APP_VERSION = '0.241'
 
 // Base URL for Flair API endpoints.
 @Field static final String BASE_URL = 'https://api.flair.co'
@@ -2342,6 +2342,21 @@ private Map buildDabV2ContextInputs() {
   def door = settings?.doorSensor?.currentValue('contact')
   if (door != null) { ci.doorsOpen = (door == 'open') }
   return ci
+}
+
+// A VALID (2xx) response may still carry NO JSON body. Flair PATCH responses
+// occasionally come back empty during cloud hiccups, and Hubitat's
+// AsyncResponse.getJson() then throws IllegalArgumentException ("No json exists
+// for response", forum #396) - which aborted the rest of the handler. Parse
+// defensively: a missing/unparseable body degrades to null and the caller
+// decides what still applies.
+private safeGetJson(resp, String context) {
+  try {
+    return resp?.getJson()
+  } catch (Exception e) {
+    log "${context}: response carried no parseable JSON body (${e.message ?: e})", 2
+    return null
+  }
 }
 
 // A usable numeric temperature? Missing (null), non-numeric, or non-finite
@@ -5874,10 +5889,14 @@ def handleVentPatch(resp, data) {
     return
   }
   
-  // Process the API response
-  def respJson = resp.getJson()
-  traitExtract(device, [data: respJson.data], 'percent-open', 'percent-open', '%')
-  traitExtract(device, [data: respJson.data], 'percent-open', 'level', '%')
+  // Process the API response. An empty-body PATCH response (forum #396)
+  // degrades to null and we fall through to the local target update below;
+  // the next poll reconciles from the API.
+  def respJson = safeGetJson(resp, 'handleVentPatch')
+  if (respJson?.data) {
+    traitExtract(device, [data: respJson.data], 'percent-open', 'percent-open', '%')
+    traitExtract(device, [data: respJson.data], 'percent-open', 'level', '%')
+  }
   
   // Update local state ONLY after successful API response
   if (data.targetOpen != null) {
@@ -5904,7 +5923,11 @@ def patchRoom(device, active) {
 def handleRoomPatch(resp, data) {
   decrementActiveRequests()  // Always decrement when response comes back
   if (!isValidResponse(resp) || !data) { return }
-  traitExtract(data.device, resp.getJson(), 'active', 'room-active')
+  // Same empty-body tolerance as handleVentPatch (forum #396).
+  def respJson = safeGetJson(resp, 'handleRoomPatch')
+  if (respJson != null) {
+    traitExtract(data.device, respJson, 'active', 'room-active')
+  }
 }
 
 // ------------------------------

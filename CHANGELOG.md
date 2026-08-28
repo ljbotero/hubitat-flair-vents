@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.241] - 2026-08-27 (Beta / Early Release channel)
+
+> Hardens the PATCH response path against empty-body Flair cloud responses
+> (forum #396) and documents the outdoor temp source honestly (forum #397).
+> Distributed as `bundles/flair-vents.v0.241.zip` on the HPM **Beta / Early
+> Release** channel; the stable channel remains **0.235**.
+
+### Fixed
+
+- **Empty-body PATCH responses no longer crash `handleVentPatch`.** Flair's cloud
+  occasionally answers a vent/room PATCH with a 2xx response carrying no JSON body;
+  Hubitat's `AsyncResponse.getJson()` then throws
+  `IllegalArgumentException: No json exists for response`, aborting the handler before
+  the local percent-open/level update for the commanded target ran, so device state
+  silently drifted until the next poll. Both PATCH handlers (`handleVentPatch`,
+  `handleRoomPatch`) now parse defensively via `safeGetJson`: an empty body skips the
+  trait extraction, the commanded target still applies locally, and the next poll
+  reconciles from the API.
+
+### Documentation
+
+- **Outdoor temp source labeled as reserved.** The input feeds the regime-banding
+  plumbing (cold/mild/hot classification for per-regime efficiency learning), but the
+  balancing loop does not consume the regime rates yet, so the sensor currently has no
+  control effect. The README settings reference now says so instead of implying it
+  shapes learning today.
+
+### Added
+
+- Regression suite `tests/patch-empty-body-response-tests.groovy` pinning the
+  empty-body tolerance (no exception, local target still applied) and the unchanged
+  with-body behavior for both PATCH handlers.
+
 ## [0.240] - 2026-08-21 (Beta / Early Release channel)
 
 > Makes the opt-in DAB v2 diagnostic devices real (forum #392). The "Create diagnostic
